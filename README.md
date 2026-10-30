@@ -1,4 +1,4 @@
-# Whale Brain
+# dsh-whale · Particle Brain
 
 > A DSH plugin that grows an AI's chat history into **two living particle brains** — one self for private chats, another for group chats.
 > Concepts are not a hardcoded persona; they are discovered from raw conversation. The older a memory gets, the further out it drifts, and the fainter it becomes.
