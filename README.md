@@ -1,116 +1,116 @@
-# 小鲸鱼 · 粒子大脑
+# Whale Brain
 
-> 一个 DSH 插件：把 AI 的聊天经历长成**两颗粒子大脑**——私聊里一个自我，群聊里另一个。
-> 概念不是写死的人设，是从语料里自己长出来的；越旧的记忆飘得越远，也越模糊。
-> 闲下来它会自己上网，想明白一个词，或者翻翻今天在播什么番。
+> A DSH plugin that grows an AI's chat history into **two living particle brains** — one self for private chats, another for group chats.
+> Concepts are not a hardcoded persona; they are discovered from raw conversation. The older a memory gets, the further out it drifts, and the fainter it becomes.
+> When idle, it goes online on its own: looks up a word it keeps thinking about, or checks what anime is airing today.
 
 ---
 
-## 它到底在做什么
+## What it actually does
 
-大多数"AI 人设"是一张表：喜欢什么、讨厌什么、说话什么语气，写死在提示词里。
-这个插件反过来——**只给它经历，不给它结论**：
+Most "AI personas" are a table: likes this, hates that, speaks in this tone, written into the system prompt.
+This plugin does the opposite — **it gives the model experience, not conclusions**:
 
-1. 它读聊天记录、备忘、黑话表，把句子切碎。
-2. 用 n-gram 频率 + 左右邻熵 + 内部凝固度，**无监督发现哪些词是一个"概念"**。
-   没有人告诉它"你在意的是孤独"，是「孤独」这个词自己满足条件长出来的。
-3. 概念之间按共现连成突触（Hebbian），再用标签传播分簇——于是长出了"方向"。
-4. 每个概念按艾宾浩斯曲线算保持率，**保持率决定它飘到多外面**。
+1. It reads chat logs, notes, and a slang dictionary, then cuts sentences into fragments.
+2. Using n-gram frequency, left/right neighbor entropy, and internal cohesion, it **discovers which fragments are concepts — unsupervised**.
+   Nobody tells it "you care about loneliness"; the word 孤独 qualifies on its own.
+3. Concepts connect through co-occurrence (Hebbian), then label propagation forms clusters — and that is where "directions" come from.
+4. Every concept gets a retention score from the Ebbinghaus curve, and **retention decides how far out it drifts**.
 
-所以两个自我会长出完全不同的东西：私聊那边是「主动 / 撒娇 / 夏天」，群聊那边是「诗人 / 抽象 / 闭嘴 / wdf」。同一条鱼，在两种关系里长出两个自己。
+That is why the two selves grow differently: the private one yields 「主动 / 撒娇 / 夏天」, the group one yields 「诗人 / 抽象 / 闭嘴 / wdf」. Same whale, two relationships, two selves.
 
-## 遗忘曲线是这里的核心
+## The forgetting curve is the core
 
-不是随手调个衰减，是真的接了艾宾浩斯：
+This is not a hand-tuned decay. It is actually Ebbinghaus:
 
 ```
-R(t) = e^(−t / S)                       保持率
-S    = S0 · (1 + k·A)                   记忆强度，A = 当前激活
-r    = rMin + (rMax − rMin) · (1 − R)   发散半径 = 遗忘程度
+R(t) = e^(−t / S)                       retention
+S    = S0 · (1 + k·A)                   memory strength, A = current activation
+r    = rMin + (rMax − rMin) · (1 − R)   radius = degree of forgetting
 ```
 
-- 刚形成的记忆 R≈1，贴在核心。
-- 完全遗忘的 R≈0，飘到最外层准备消散。
-- **被反复想起的记忆 S 变大、R 掉得慢**，所以再老也留在内圈——这就是间隔重复。
+- A fresh memory has R≈1 and sits at the core.
+- A fully forgotten one has R≈0 and drifts to the rim, ready to dissolve.
+- **Memories that keep getting recalled grow S and decay slower**, so even old ones stay inside — that is spaced repetition.
 
-外加三条让它更像人的机制：
+On top of that, three mechanisms that make it more human:
 
-| 机制 | 怎么算 | 效果 |
+| Mechanism | How it is computed | Effect |
 |---|---|---|
-| 情绪唤醒 | 概念**出处句子**里的情绪词、感叹号、连续重复字符 | 高唤醒的记忆固化更牢 |
-| 干扰 | 邻居集合的 Jaccard 相似度，只被比自己强的同类压制 | 太像的记忆互相挤占 |
-| 重构 | 每被想起一次，年龄时钟往回拨（封顶减半） | 回忆即重新编码 |
+| Emotional arousal | Emotion words, exclamation marks, repeated characters in the **sentences the concept came from** | Arousing memories consolidate harder |
+| Interference | Jaccard similarity of neighbor sets, only suppressed by stronger peers | Near-duplicate memories crowd each other out |
+| Reconsolidation | Every recall rewinds the age clock (capped at half) | Recall is re-encoding |
 
-## 它会自己找东西学
+## It decides what to learn
 
-不给它固定主题列表。它按"兴趣 × 心情"自己决定下一步：
+No fixed topic list. It picks its next move from "interest × mood":
 
-- **热梗**：B站热榜 + 贴吧热议
-- **日漫**：B站番剧排行（筛日本）+ 番剧详情里的类型与剧情简介
-- **思想**：哲学 / 文学 / 诗词
-- **琢磨自己脑子里最响的那个词**
+- **Memes** — Bilibili trending + Tieba hot topics
+- **Anime** — Bilibili bangumi ranking (Japan only) plus genres and synopsis
+- **Thought** — philosophy / literature / classical poetry
+- **Curiosity** — chew on whichever word is loudest in its head right now
 
-每做一件事，结果会反过来改它的兴趣权重：有收获就涨，连着三次白跑就进入"厌倦期"，自己绕开一阵子。
-心情（暖 / 闷 / 好奇 / 累）会被私聊、群聊、长时间没人理推动，也参与决定它此刻更想做什么——累了就更想看点动画。
+Every action feeds back into its interest weights: gains raise them, three fruitless tries in a row push that direction into a cooldown.
+Mood (warm / lonely / curious / tired) is driven by private chats, group chats, and long silences, and it also shapes what the whale feels like doing — when tired, it would rather watch anime.
 
-## 两个视角
+## Two ways to look at it
 
-- **Harness 面板**：两颗脑子并排，鼠标拖动旋转、滚轮推近，点击概念看详情。
-- **手机页面**（`mobile.html`）：独立自包含，双指缩放、单指旋转、点击弹卡片，顶部显示"她现在的心情"。
+- **Harness panel** — both brains side by side; drag to rotate, scroll to push in, click a concept for details.
+- **Mobile page** (`mobile.html`) — fully self-contained; pinch to zoom, drag to rotate, tap a concept for a card, with the whale's current mood in the header.
 
-颜色是五个方向色（蓝/黄/紫/绿/红），按脑区大小排名分配——最大的脑区蓝、第二黄，以此类推，保证五色都用上且大区颜色稳定。
+Colors are five direction hues (blue / yellow / purple / green / red), assigned by cluster size rank — largest cluster blue, second yellow, and so on. This guarantees all five appear while big clusters keep a stable color.
 
-## 安装
+## Install
 
 ```bash
-dsh plugin add <本仓库路径或包名>
+dsh plugin add <path-to-this-repo-or-package>
 ```
 
-装完重启 DSH（客户端那份要重新打包），左侧会多一个图标。
+Restart DSH afterwards (the client half is bundled at startup); a new icon appears in the sidebar.
 
-### 配置
+### Configuration
 
-插件需要知道你**聊天记录在哪**、**记忆存哪**：
+The plugin needs to know **where your chat logs are** and **where to keep its memory**:
 
 ```yaml
 - id: dsh-whale-brain
   name: dsh-whale-brain
   config:
-    stateDir: ~/.dsh/qq-bridge-state   # 读 qq-activity.log / shared-memory.json / slang.json
-    dataDir: ~/.dsh/whale-brain        # 写 mind.json / mood.json
+    stateDir: ~/.dsh/qq-bridge-state   # reads qq-activity.log / shared-memory.json / slang.json
+    dataDir: ~/.dsh/whale-brain        # writes mind.json / mood.json
 ```
 
-`stateDir` 不填会依次尝试几个常见位置。数据源是这几个文件：
+If `stateDir` is omitted, a few common locations are tried in order. Data sources:
 
-| 文件 | 提供什么 |
+| File | Provides |
 |---|---|
-| `qq-activity.log` | 聊天流（私聊/群聊分开） |
-| `shared-memory.json` | 它被要求记住的事 → 事件点 |
-| `slang.json` | 已确认的黑话表 |
+| `qq-activity.log` | The chat stream (private and group separated) |
+| `shared-memory.json` | Things it was told to remember → event dots |
+| `slang.json` | Confirmed slang entries |
 
-**没有这些文件也能跑**，只是脑子会很小——它没有经历，就什么都长不出来。
+**It runs without these files**, but the brain will be tiny — with no experience, nothing grows.
 
-## 已知边界
+## Known limits
 
-- **跑在哪个宿主上**：它为 QQ 机器人写的（读 qq-bridge 的 state）。换成别的数据源要改 `lib/sources.mjs`，一个函数的事。
-- **长尾还是指数**：现在用指数衰减，31 天后必然归零；真实人类还有两成。等语料活过一个月，得换成幂律。
-- **日漫只到"知道在播什么"**：番剧简介进来了，但台词语气那部分靠一言的动画分类补，量不大。
-- **抖音抓不了**：热榜接口要签名，没绕。
+- **Built for a QQ bot host**: it reads qq-bridge state. Porting to another data source means editing one function in `lib/sources.mjs`.
+- **Exponential, not power-law**: after 31 days retention hits zero; humans still keep ~20%. Once the corpus is older than a month, this needs to become a power law.
+- **Anime stops at "knows what is airing"**: synopses come through, but tone of speech only gets a small supplement from Hitokoto's anime category.
+- **No Douyin**: its hot-list API requires request signing, which was not reverse-engineered.
 
-## 目录
+## Layout
 
 ```
-index.js          宿主半区：路由、手机服务、引擎入口
+index.js          Host half: routes, mobile server, engine entry
 lib/
-  mind.mjs        大脑构建：艾宾浩斯、情绪、干扰、重构、社区、坐标
-  lexicon.mjs     无监督概念发现（n-gram + 熵 + 凝固度）
-  learn.mjs       好奇心：挑词、搜索、注入
-  feeds.mjs       广撒网：B站/贴吧/一言
-  self.mjs        兴趣与心情：状态、决策、生活日志
-  sources.mjs     经验流收集与清洗
-  engine.mjs      双分支引擎与重建
-client/client.js  Harness 面板（React + Canvas）
-mobile.html       手机端独立页面
+  mind.mjs        Brain build: Ebbinghaus, arousal, interference, reconsolidation, communities
+  lexicon.mjs     Unsupervised concept discovery (n-gram + entropy + cohesion)
+  learn.mjs       Curiosity: pick a word, search, inject
+  feeds.mjs       Wide net: Bilibili / Tieba / Hitokoto
+  self.mjs        Interest and mood: state, decisions, life log
+  sources.mjs     Experience stream collection and cleaning
+  engine.mjs      Dual-branch engine and rebuilds
+client/client.js  Harness panel (React + Canvas)
+mobile.html       Standalone mobile page
 ```
 
 ## License
