@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.DS_Store
+.env
+*.local.json
+mind.json
+mood.json
+endpoint.json
+data/

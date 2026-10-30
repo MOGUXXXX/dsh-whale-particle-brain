@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>小鲸鱼 · 粒子大脑</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif;
+    color:#dfe9f5;overscroll-behavior:none}
+  #stage{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%;touch-action:none}
+  .top{position:fixed;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + 12px) 96px 10px 14px;
+    pointer-events:none;z-index:3}
+  .title{font-size:14px;font-weight:600;letter-spacing:.3px;flex:1 1 0%;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .title small{display:block;font-weight:400;font-size:10.5px;color:#6c8199;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
+  .tabs{position:fixed;top:calc(env(safe-area-inset-top) + 14px);right:12px;display:flex;gap:6px;pointer-events:auto;z-index:4}
+  .tab{padding:5px 11px;border-radius:14px;font-size:11.5px;color:#8fa4bb;
+    border:1px solid #1b2b3d;background:rgba(6,12,20,.7)}
+  .tab.on{color:#e8f2ff;border-color:#2b4a68;background:rgba(16,32,50,.85)}
+  .bottom{position:fixed;left:0;right:0;bottom:0;padding:10px 14px calc(env(safe-area-inset-bottom) + 12px);
+    display:flex;gap:14px;font-size:10.5px;color:#5f7285;pointer-events:none;z-index:3}
+  .bottom b{color:#c9dcef;font-weight:600}
+  .hint{position:fixed;left:50%;top:46%;transform:translate(-50%,-50%);
+    font-size:12px;color:#5a6d80;text-align:center;line-height:1.7;z-index:2}
+  .hint.hidden{display:none}
+  #card{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 52px);
+    display:none;background:rgba(11,18,29,.97);border:1px solid rgba(96,148,208,.3);border-radius:14px;
+    padding:13px 15px 12px;z-index:6;
+    transition:opacity .18s ease,transform .18s ease;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+  #card.show{display:block}
+  #card.hidden{opacity:0;transform:translateY(8px);pointer-events:none;visibility:hidden}
+  .card-t{font-size:15px;font-weight:600;letter-spacing:.3px;margin-bottom:9px;color:#eaf2fb}
+  .card-t i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:middle;font-style:normal}
+  .card-body{display:flex;flex-wrap:wrap;gap:6px 16px}
+  .card-kv{font-size:11.5px;color:#7d92a9}
+  .card-kv b{color:#dfe9f5;font-weight:600;margin-left:4px}
+  .card-f{margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#5d7290;letter-spacing:.2px}
+  .hint{transition:opacity .6s}
+  .mood{margin-top:6px;font-size:11px;color:#5d7f9e;letter-spacing:.3px;min-height:14px}
+  .mood b{color:#8fb6d8;font-weight:500}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div class="top">
+  <div class="title">小鲸鱼 · 粒子大脑<small id="sub">正在连…</small></div>
+  <div id="mood" class="mood"></div>
+  <div class="tabs">
+    <button class="tab on" data-b="private">私聊</button>
+    <button class="tab" data-b="group">群聊</button>
+  </div>
+</div>
+<div id="hint" class="hint">正在读取记忆…</div>
+<div id="card" class="hidden">
+  <div class="card-t"></div>
+  <div class="card-body"></div>
+  <div class="card-f"></div>
+</div>
+<div class="bottom">
+  <span><b id="n">0</b> 概念</span>
+  <span><b id="e">0</b> 突触</span>
+  <span>清晰度 <b id="r">0%</b></span>
+  <span style="margin-left:auto" id="age"></span>
+</div>
+<script>
+(function () {
+  'use strict'
+  var KEY = '__KEY__'
+  var cv = document.getElementById('cv')
+  var ctx = cv.getContext('2d')
+  var hint = document.getElementById('hint')
+  var state = null
+  var branch = 'private'
+  // ── 相机（与桌面面板完全一致）──
+  // 轨道相机：视角固定在云外，放大 = 相机沿 z 轴推近（dist 变小），半径 R 固定。
+  var HOME = { yaw: 0.6, pitch: -0.18, zoom: 1 }
+  var view = { yaw: HOME.yaw, pitch: HOME.pitch, zoom: 1, panX: 0, panY: 0 }
+  // 目标值：所有手势只改这里，渲染每帧朝它插值 —— 这是"丝滑"的来源
+  var tgt = { pitch: HOME.pitch, zoom: 1, panX: 0, panY: 0 }
+  var vel = { yaw: 0, pitch: 0 }
+  var W = 0, H = 0, DPR = 1
+  var sprites = new Map()
+
+  var DOT = '208,228,248'
+  // 五个方向色：蓝 / 黄 / 紫 / 绿 / 红。按脑区分，不按色相环连续取，
+  // 这样每一簇的颜色是确定的、能认出来的。
+  var PALETTE = [
+    '82,140,255',   // 蓝
+    '255,201,74',   // 黄
+    '164,107,255',  // 紫
+    '74,222,128',   // 绿
+    '255,92,108'    // 红
+  ]
+  var HUE_STEP = 137.508
+  // 手机屏小、GPU 弱：每个概念少散几颗，密度靠整体铺开补
+  var SAT_SCALE = 0.62
+
+  function hslToRgb(h, s, l) {
+    var c = (1 - Math.abs(2 * l - 1)) * s, hp = h / 60, x = c * (1 - Math.abs((hp % 2) - 1))
+    var r = 0, g = 0, b = 0
+    if (hp < 1) { r = c; g = x } else if (hp < 2) { r = x; g = c }
+    else if (hp < 3) { g = c; b = x } else if (hp < 4) { g = x; b = c }
+    else if (hp < 5) { r = x; b = c } else { r = c; b = x }
+    var m = l - c / 2
+    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)]
+  }
+  function dotSprite(rgb) {
+    var got = sprites.get(rgb)
+    if (got) return got
+    var S = 64, c = document.createElement('canvas')
+    c.width = c.height = S
+    var g = c.getContext('2d')
+    var gr = g.createRadialGradient(32, 32, 0, 32, 32, 32)
+    gr.addColorStop(0, 'rgba(' + rgb + ',1)')
+    gr.addColorStop(0.5, 'rgba(' + rgb + ',1)')
+    gr.addColorStop(0.84, 'rgba(' + rgb + ',0.66)')
+    gr.addColorStop(0.93, 'rgba(' + rgb + ',0.18)')
+    gr.addColorStop(1, 'rgba(' + rgb + ',0)')
+    g.fillStyle = gr
+    g.beginPath(); g.arc(32, 32, 32, 0, Math.PI * 2); g.fill()
+    sprites.set(rgb, c)
+    return c
+  }
+  function glowSprite(rgb) {
+    var key = 'g' + rgb, got = sprites.get(key)
+    if (got) return got
+    var S = 64, c = document.createElement('canvas')
+    c.width = c.height = S
+    var g = c.getContext('2d')
+    var gr = g.createRadialGradient(32, 32, 0, 32, 32, 32)
+    gr.addColorStop(0, 'rgba(' + rgb + ',1)')
+    gr.addColorStop(0.22, 'rgba(' + rgb + ',0.72)')
+    gr.addColorStop(0.5, 'rgba(' + rgb + ',0.2)')
+    gr.addColorStop(1, 'rgba(' + rgb + ',0)')
+    g.fillStyle = gr
+    g.beginPath(); g.arc(32, 32, 32, 0, Math.PI * 2); g.fill()
+    sprites.set(key, c)
+    return c
+  }
+  function hashStr(s) {
+    var h = 2166136261
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
+    return h >>> 0
+  }
+  function seededRng(seed) {
+    var a = seed >>> 0
+    return function () {
+      a = (a + 0x6d2b79f5) | 0
+      var t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+
+  // 背景里的浮尘：固定种子生成，每帧只做明暗呼吸，不重新随机
+  var DUST = (function () {
+    var r = seededRng(20261028), out = []
+    for (var i = 0; i < 220; i++) {
+      out.push({
+        x: r(), y: r(),
+        s: 0.4 + r() * 1.2,
+        a: 0.03 + r() * 0.1,
+        p: r() * 6.283,
+        w: 0.25 + r() * 0.8
+      })
+    }
+    return out
+  })()
+
+  var geom = null
+  function prepare(b) {
+    if (!b || !b.nodes || !b.nodes.length) return { nodes: [], edges: [], maxW: 1 }
+    var scored = b.nodes.map(function (n, i) {
+      return [i, n.c * (0.45 + 0.55 * n.r) * (0.6 + 0.8 * (n.h || 0))]
+    }).sort(function (a, c) { return c[1] - a[1] })
+    var hubCount = Math.min(8, Math.max(3, Math.round(b.nodes.length * 0.04)))
+    var hubs = {}
+    scored.slice(0, hubCount).forEach(function (x) { hubs[x[0]] = true })
+
+    // 按脑区大小排名分色：最大的蓝、第二黄、第三紫、第四绿、第五红，再循环。
+    // 这样五个颜色一定都用上，大区颜色也不会因为社区编号变动而重排。
+    var gsize = {}
+    for (var di0 = 0; di0 < b.nodes.length; di0++) {
+      var g0 = b.nodes[di0].g | 0
+      gsize[g0] = (gsize[g0] || 0) + 1
+    }
+    var grank = Object.keys(gsize).sort(function (a, c) { return gsize[c] - gsize[a] })
+    var gcolor = {}
+    for (var gi0 = 0; gi0 < grank.length; gi0++) {
+      gcolor[grank[gi0]] = PALETTE[gi0 % PALETTE.length]
+    }
+    var toneOf = function (gid) { return gcolor[gid] || PALETTE[0] }
+
+    var nodes = b.nodes.map(function (n, i) {
+      var heat = n.h || 0
+      var haze = Math.max(0, Math.min(1, 1 - Math.pow(n.r, 0.75)))
+      var rgb = toneOf(n.g | 0).split(',').map(Number)
+      var w = Math.min(1, Math.log1p(n.c) / 3)
+      var rand = seededRng(hashStr(n.t))
+      var count = Math.max(2, Math.round((4 + heat * 3 + (1 - haze) * 2) * SAT_SCALE))
+      var spread = 1.15 + haze * 3.4
+      var sat = []
+      for (var k = 0; k < count; k++) {
+        var a = rand() * Math.PI * 2
+        var rr = Math.sqrt(rand()) * spread
+        sat.push([Math.cos(a) * rr, Math.sin(a) * rr, 0.45 + rand() * 0.55])
+      }
+      return {
+        t: n.t, x: n.x, y: n.y, z: n.z, r: n.r, a: n.a, hits: n.n, S: n.S, q: n.q, comp: n.x2, heat: heat, haze: haze,
+        hub: !!hubs[i],
+        tone: rgb.join(','),
+        soft: rgb.map(function (c) { return Math.round(c + (255 - c) * 0.32) }).join(','),
+        dot: (1.5 + 1.7 * w) * (0.9 + 0.5 * heat),
+        glow: hubs[i] ? (32 + 36 * w) * (0.85 + 0.5 * heat) : 0,
+        alpha: 0.12 + 0.88 * Math.pow(n.r, 0.9),
+        sat: sat
+      }
+    })
+    // 事件：略大一点的暖色/冷色点，和概念点区分开
+    ;(b.events || []).forEach(function (e) {
+      nodes.push({
+        t: e.t, full: e.full, x: e.x, y: e.y, z: e.z, r: e.r, a: e.a, hits: 0,
+        ev: true,
+        kind: e.k === 'w' ? '自己上网学的' : '主人让记住的',
+        tone: e.k === 'w' ? '168,212,255' : '242,206,152',
+        soft: e.k === 'w' ? '198,226,255' : '250,228,196',
+        heat: 0.5,
+        haze: 1 - e.r,
+        hub: false,
+        alpha: 0.35 + 0.65 * e.r,
+        dot: 2.7,
+        glow: 0,
+        sat: []
+      })
+    })
+
+    // 把整团云的中心搬到坐标原点：一次算好，帧内不再做质心平移（那曾是抖动来源）
+    if (nodes.length) {
+      var sx0 = 0, sy0 = 0, sz0 = 0
+      for (var ci0 = 0; ci0 < nodes.length; ci0++) {
+        sx0 += nodes[ci0].x; sy0 += nodes[ci0].y; sz0 += nodes[ci0].z
+      }
+      sx0 /= nodes.length; sy0 /= nodes.length; sz0 /= nodes.length
+      for (var ci1 = 0; ci1 < nodes.length; ci1++) {
+        nodes[ci1].x -= sx0; nodes[ci1].y -= sy0; nodes[ci1].z -= sz0
+      }
+    }
+
+    var edges = (b.edges || []).filter(function (e) { return nodes[e[0]] && nodes[e[1]] })
+    var maxW = 1
+    edges.forEach(function (e) { if (e[2] > maxW) maxW = e[2] })
+    return { nodes: nodes, edges: edges, maxW: maxW }
+  }
+
+  var nebula = null
+  function buildNebula() {
+    var c = document.createElement('canvas')
+    c.width = Math.max(1, Math.round(W * DPR))
+    c.height = Math.max(1, Math.round(H * DPR))
+    var g2 = c.getContext('2d')
+    g2.scale(DPR, DPR)
+    g2.fillStyle = '#000'
+    g2.fillRect(0, 0, W, H)
+    // 深空底
+    var sky = g2.createRadialGradient(W / 2, H * 0.46, 0, W / 2, H * 0.46, Math.max(W, H) * 0.8)
+    sky.addColorStop(0, 'rgba(18,32,56,0.55)')
+    sky.addColorStop(0.4, 'rgba(9,18,33,0.3)')
+    sky.addColorStop(1, 'rgba(0,0,0,0)')
+    g2.fillStyle = sky
+    g2.fillRect(0, 0, W, H)
+    // 远端的星云团：只是空气，不能抢点
+    var blobs = [
+      { x: 0.16, y: 0.2, r: 0.62, c: '92,104,226', a: 0.085 },
+      { x: 0.86, y: 0.3, r: 0.5, c: '44,152,186', a: 0.07 },
+      { x: 0.66, y: 0.8, r: 0.66, c: '146,72,182', a: 0.075 },
+      { x: 0.28, y: 0.74, r: 0.46, c: '44,92,168', a: 0.06 },
+      { x: 0.5, y: 0.5, r: 0.34, c: '60,120,190', a: 0.05 }
+    ]
+    for (var bi = 0; bi < blobs.length; bi++) {
+      var bl = blobs[bi]
+      var rad = Math.max(W, H) * bl.r
+      var bg2 = g2.createRadialGradient(bl.x * W, bl.y * H, 0, bl.x * W, bl.y * H, rad)
+      bg2.addColorStop(0, 'rgba(' + bl.c + ',' + bl.a + ')')
+      bg2.addColorStop(0.45, 'rgba(' + bl.c + ',' + (bl.a * 0.42).toFixed(3) + ')')
+      bg2.addColorStop(1, 'rgba(' + bl.c + ',0)')
+      g2.fillStyle = bg2
+      g2.fillRect(0, 0, W, H)
+    }
+    return c
+  }
+
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1)
+    // 全部取整：手机 DPR 常常是 2.625 / 3 这种非整数，
+    // floor(W*DPR) 会让位图比绘制区多出不到一像素，那一列永远清不干净，
+    // 拖动时就表现为屏幕边缘一条细细的亮线。
+    W = Math.round(window.innerWidth)
+    H = Math.round(window.innerHeight)
+    cv.width = Math.round(W * DPR)
+    cv.height = Math.round(H * DPR)
+    cv.style.width = W + 'px'
+    cv.style.height = H + 'px'
+    ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0)
+    nebula = W > 0 ? buildNebula() : null
+  }
+
+  var last = 0
+  function frame(now) {
+    var dt = Math.min(64, now - last)
+    last = now
+    if (!geom) { requestAnimationFrame(frame); return }
+    var g = geom
+    var t = now / 1000
+    var frameK = dt / 16.67
+
+    // 松手后的惯性（只在一根手指都没有时衰减）
+    if (pointers.size === 0) {
+      view.yaw += vel.yaw
+      vel.yaw *= Math.pow(0.9, frameK)
+      if (Math.abs(vel.yaw) < 1e-5) vel.yaw = 0
+      if (Math.abs(vel.pitch) > 1e-5) {
+        tgt.pitch = Math.max(-1.5, Math.min(1.5, tgt.pitch + vel.pitch * 0.6))
+        vel.pitch *= Math.pow(0.85, frameK)
+      }
+    }
+
+    // 所有目标值都缓动追过去 —— 帧率无关的指数逼近
+    var ease = 1 - Math.pow(0.0015, dt / 1000)
+    view.pitch += (tgt.pitch - view.pitch) * ease
+    view.zoom += (tgt.zoom - view.zoom) * ease
+    view.panX += (tgt.panX - view.panX) * ease
+    view.panY += (tgt.panY - view.panY) * ease
+
+    // 自动慢转，速度自己轻微起伏（避免机械匀速）
+    view.yaw += dt * 0.00015 * (0.75 + 0.45 * Math.sin(t * 0.13))
+
+    var cx = W / 2 + view.panX
+    var cy = H * 0.47 + view.panY
+    // 放大 = 相机沿 z 轴推近；半径固定，不做二次放大
+    var dist = Math.max(0.22, 3.4 - Math.max(0, view.zoom - 1) * 0.45)
+    var R = Math.min(W, H) * 0.62
+    var pitch = view.pitch + Math.sin(t * 0.2) * 0.035
+    var cy1 = Math.cos(view.yaw), sy1 = Math.sin(view.yaw)
+    var cp = Math.cos(pitch), sp = Math.sin(pitch)
+
+    // ① 深空底
+    // 先用设备像素把整块 canvas 清干净：CSS 尺寸和位图尺寸不是整数倍时，
+    // fillRect(0,0,W,H) 会漏掉最右/最下一列像素，拖动时留下一条残影线
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, cv.width, cv.height)
+    ctx.restore()
+    if (nebula) ctx.drawImage(nebula, 0, 0, W, H)
+    else {
+      ctx.fillStyle = '#000'
+      ctx.fillRect(0, 0, W + 1, H + 1)
+    }
+    // ② 浮尘：极暗的小点慢慢呼吸，让黑底不空
+    for (var di = 0; di < DUST.length; di++) {
+      var du = DUST[di]
+      var tw = 0.45 + 0.55 * Math.sin(t * du.w + du.p)
+      ctx.globalAlpha = du.a * tw
+      ctx.fillStyle = 'rgba(186,214,255,1)'
+      ctx.fillRect(du.x * W, du.y * H, du.s, du.s)
+    }
+    ctx.globalAlpha = 1
+
+    // ③ 暗角：把四周压下去，视线留在中间
+    var vig = ctx.createRadialGradient(W / 2, H * 0.48, Math.min(W, H) * 0.24, W / 2, H * 0.48, Math.max(W, H) * 0.72)
+    vig.addColorStop(0, 'rgba(0,0,0,0)')
+    vig.addColorStop(0.55, 'rgba(0,0,0,0.22)')
+    vig.addColorStop(1, 'rgba(0,0,0,0.72)')
+    ctx.fillStyle = vig
+    ctx.fillRect(0, 0, W, H)
+
+    // 中心柔光：一个半径很小、绝不会跑出屏幕的圆（以前这里画扩散脉冲和同心环，
+    // 半径一大就在画面里变成一条横贯的弧线 —— 用户看到的"莫名其妙的线"就是它）
+    var glowR = Math.min(W, H) * 0.3
+    var coreGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR)
+    coreGlow.addColorStop(0, 'rgba(118,176,245,0.07)')
+    coreGlow.addColorStop(0.55, 'rgba(96,146,210,0.03)')
+    coreGlow.addColorStop(1, 'rgba(80,120,180,0)')
+    ctx.fillStyle = coreGlow
+    ctx.beginPath()
+    ctx.arc(cx, cy, glowR, 0, Math.PI * 2)
+    ctx.fill()
+
+    var n = g.nodes.length
+    var px = new Float32Array(n), py = new Float32Array(n)
+    var ps = new Float32Array(n), pd = new Float32Array(n)
+    for (var i = 0; i < n; i++) {
+      var nd = g.nodes[i]
+      var x1 = nd.x * cy1 - nd.z * sy1
+      var z1 = nd.x * sy1 + nd.z * cy1
+      var y1 = nd.y * cp - z1 * sp
+      var z2 = nd.y * sp + z1 * cp
+      // 越过相机的点丢掉，否则会画出一条横穿屏幕的线
+      if (dist - z2 < 0.12) { px[i] = NaN; py[i] = NaN; ps[i] = 0; pd[i] = 0; continue }
+      var s = dist / (dist - z2)
+      px[i] = cx + x1 * R * s
+      py[i] = cy + y1 * R * s
+      ps[i] = s
+      pd[i] = (z2 + 1.1) / 2.2
+    }
+    // 屏幕质心居中：相机怎么飞，画面重心都在中间。跳过 NaN，否则整帧变黑。
+    var mcount = 0, mxs = 0, mys = 0
+    for (var m0 = 0; m0 < n; m0++) {
+      if (!isFinite(px[m0]) || !isFinite(py[m0])) continue
+      mxs += px[m0]; mys += py[m0]; mcount++
+    }
+    if (mcount) {
+      mxs /= mcount; mys /= mcount
+      var oxs = cx - mxs, oys = cy - mys
+      for (var m1 = 0; m1 < n; m1++) {
+        if (!isFinite(px[m1]) || !isFinite(py[m1])) continue
+        px[m1] += oxs; py[m1] += oys
+      }
+    }
+
+    var order = []
+    for (var q = 0; q < n; q++) order.push(q)
+    order.sort(function (a, b) { return pd[a] - pd[b] })
+
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.lineWidth = 0.5
+    for (var ei = 0; ei < g.edges.length; ei++) {
+      var ea = g.edges[ei][0], eb = g.edges[ei][1], ew = g.edges[ei][2]
+      // 坐标一旦是 NaN/Infinity，canvas 会把 moveTo 当成 (0,0)，拉出一条横穿屏幕的线
+      if (!isFinite(px[ea]) || !isFinite(py[ea]) || !isFinite(px[eb]) || !isFinite(py[eb])) continue
+      var depth = (pd[ea] + pd[eb]) / 2
+      var alpha = Math.pow(ew / g.maxW, 0.7) * 0.2 * (0.3 + 0.7 * depth)
+      if (alpha < 0.008) continue
+      var na = g.nodes[ea], nb = g.nodes[eb]
+      var accent = na.hub && na.alpha > nb.alpha ? na : (nb.hub ? nb : null)
+      ctx.strokeStyle = accent ? 'rgba(' + accent.tone + ',' + (alpha * 1.6).toFixed(3) + ')'
+        : 'rgba(' + na.soft + ',' + alpha.toFixed(3) + ')'
+      ctx.beginPath()
+      ctx.moveTo(px[ea], py[ea])
+      ctx.lineTo(px[eb], py[eb])
+      ctx.stroke()
+    }
+
+    ctx.globalCompositeOperation = 'lighter'
+    for (var k1 = 0; k1 < n; k1++) {
+      var hi = order[k1], hn = g.nodes[hi]
+      if (!hn.hub) continue
+      var breathe = 0.9 + 0.1 * Math.sin(t * 1.6 + hi * 1.7)
+      var box = hn.glow * ps[hi] * breathe
+      var core = Math.min(1, Math.max(0.5, (0.3 + 0.45 * hn.alpha) * (0.4 + 0.6 * pd[hi])) * (0.75 + 0.4 * hn.heat))
+      box = Math.min(box, 54)
+      var wide = Math.min(box * 2.0, 76)
+      ctx.globalAlpha = core * 0.26
+      ctx.drawImage(glowSprite(hn.tone), px[hi] - wide / 2, py[hi] - wide / 2, wide, wide)
+      ctx.globalAlpha = core
+      ctx.drawImage(glowSprite(hn.tone), px[hi] - box / 2, py[hi] - box / 2, box, box)
+    }
+
+    
+
+    ctx.globalCompositeOperation = 'source-over'
+    for (var k2 = 0; k2 < n; k2++) {
+      var ii = order[k2], nn = g.nodes[ii]
+      var haze = nn.haze
+      var jx = Math.sin(t * 0.8 + ii * 2.1) * haze * 3.4
+      var jy = Math.cos(t * 1.05 + ii * 1.3) * haze * 3.4
+      var x = px[ii] + jx, y = py[ii] + jy
+      var al = nn.alpha * (0.6 + 0.4 * pd[ii]) * (0.9 + 0.35 * nn.heat)
+      if (nn.hub) al = Math.min(1, al + 0.45)
+      if (al < 0.03) continue
+      var size = Math.min(30, Math.max(1, (nn.hub ? 2.6 : nn.dot) * ps[ii] * (0.7 + 0.55 * pd[ii])))
+      if (nn.ev) {
+        var es = Math.max(2.2, size * 1.35)
+        ctx.globalAlpha = Math.min(0.42, al * 0.3)
+        var eh = Math.min(es * 5.2, 42)
+        ctx.drawImage(glowSprite(nn.soft), x - eh / 2, y - eh / 2, eh, eh)
+        ctx.globalAlpha = Math.min(1, al)
+        ctx.fillStyle = 'rgb(' + nn.tone + ')'
+        ctx.beginPath()
+        ctx.arc(x, y, es * 0.5, 0, Math.PI * 2)
+        ctx.fill()
+        continue
+      }
+      if (nn.hub) {
+        ctx.globalAlpha = al
+        ctx.fillStyle = 'rgb(' + nn.tone + ')'
+        ctx.beginPath(); ctx.arc(x, y, size * 0.58, 0, Math.PI * 2); ctx.fill()
+        ctx.globalAlpha = Math.min(1, al * 0.95)
+        ctx.fillStyle = 'rgba(255,255,255,0.92)'
+        ctx.beginPath(); ctx.arc(x, y, size * 0.24, 0, Math.PI * 2); ctx.fill()
+        continue
+      }
+      if (haze < 0.42) {
+        var dot = dotSprite(nn.soft)
+        if (al > 0.32) {
+          var hb = Math.min(size * 4.8, 34)
+          ctx.globalAlpha = al * 0.075
+          ctx.drawImage(glowSprite(nn.soft), x - hb / 2, y - hb / 2, hb, hb)
+        }
+        for (var s3 = 0; s3 < nn.sat.length; s3++) {
+          var so = nn.sat[s3]
+          ctx.globalAlpha = al * 0.85 * so[2]
+          var dx = x + so[0] * ps[ii], dy = y + so[1] * ps[ii], dd = size * 1.4
+          ctx.drawImage(dot, dx - dd / 2, dy - dd / 2, dd, dd)
+        }
+        ctx.globalAlpha = al
+        var d0 = size * 2
+        ctx.drawImage(dot, x - d0 / 2, y - d0 / 2, d0, d0)
+        // 一点白热，让小点看起来是"发出来的"而不是"画上去的"
+        if (nn.heat > 0.6) {
+          var dc = size * 0.7
+          ctx.globalAlpha = Math.min(0.7, al * (0.2 + 0.3 * nn.heat))
+          ctx.drawImage(dotSprite('244,250,255'), x - dc / 2, y - dc / 2, dc, dc)
+        }
+      } else {
+        // 快忘的记忆：一团柔雾（用贴图，别用 arc —— 硬边圆盘近看就是一片灰饼）
+        var hp = Math.min(size * 7, 56)
+        ctx.globalAlpha = al * 0.2
+        ctx.drawImage(glowSprite('140,168,204'), x - hp / 2, y - hp / 2, hp, hp)
+        ctx.globalAlpha = al * 0.34
+        var dd2 = Math.min(size * 1.1, 9)
+        ctx.drawImage(dotSprite(DOT), x - dd2 / 2, y - dd2 / 2, dd2, dd2)
+      }
+    }
+
+    ctx.globalCompositeOperation = 'source-over'
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '0.6px'
+    var labelSize = view.zoom > 2.2 ? 11 : 10
+    ctx.font = 'italic ' + labelSize + 'px -apple-system,"PingFang SC",sans-serif'
+
+    // 放大到一定程度：所有够清楚的点点都带上小字，按重要度挑、并做简单避让
+    var detail = view.zoom > 1.75
+    var placed = []
+    var cand = []
+    for (var ci = 0; ci < n; ci++) {
+      var cn = g.nodes[ci]
+      if (cn.alpha < 0.16) continue
+      if (!detail && !cn.hub) continue
+      cand.push(ci)
+    }
+    // 重要度排序：越亮、越热越靠前，先占位置
+    cand.sort(function (a2, b2) {
+      var na = g.nodes[a2], nb2 = g.nodes[b2]
+      return (nb2.alpha * (0.6 + nb2.heat)) - (na.alpha * (0.6 + na.heat))
+    })
+    for (var qi = 0; qi < cand.length; qi++) {
+      var li = cand[qi]
+      var ln = g.nodes[li]
+      var tx = px[li] + 5
+      var ty = py[li] + 3
+      // 事件原文很长，画布上只留开头几个字，全文在卡片里
+      var labelText = ln.ev ? ln.t.slice(0, 7) : ln.t
+      var tw = labelText.length * labelSize * 1.05 + 6
+      // 右边要连字宽一起算，否则会贴着屏幕边被切掉
+      if (tx < 4 || tx + tw > W - 4 || ty < 64 || ty > H - 70) continue
+      var clash = false
+      for (var pj = 0; pj < placed.length; pj++) {
+        var r0 = placed[pj]
+        if (tx < r0[0] + r0[2] && tx + tw > r0[0] && ty - labelSize < r0[1] && ty > r0[1] - r0[3]) { clash = true; break }
+      }
+      if (clash) continue
+      if (placed.length > 60) break
+      placed.push([tx, ty, tw, labelSize + 2])
+      var la = detail
+        ? Math.min(0.8, 0.28 + ln.alpha * 0.45)
+        : Math.min(0.9, (0.28 + 0.42 * ln.r) * (0.4 + 0.6 * pd[li]) + 0.16)
+      ctx.fillStyle = 'rgba(' + ln.soft + ',' + la.toFixed(3) + ')'
+      ctx.fillText(labelText, tx, ty)
+    }
+    // 留一份当前帧的投影给点击命中用
+    hitPx = px; hitPy = py; hitN = n
+    // 顶/底压暗直接画进 canvas：以前是两条叠在上面的 CSS 渐变，
+    // 画布每帧重绘、它们却在合成层里，某些手机会在交界处露出一条缝
+    var topFade = ctx.createLinearGradient(0, 0, 0, 96)
+    topFade.addColorStop(0, 'rgba(0,0,0,0.92)')
+    topFade.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = topFade
+    ctx.fillRect(0, 0, W, 96)
+    var botFade = ctx.createLinearGradient(0, H - 104, 0, H)
+    botFade.addColorStop(0, 'rgba(0,0,0,0)')
+    botFade.addColorStop(1, 'rgba(0,0,0,0.94)')
+    ctx.fillStyle = botFade
+    ctx.fillRect(0, H - 104, W, 104)
+
+    ctx.globalAlpha = 1
+    requestAnimationFrame(frame)
+  }
+
+  function setTab(b) {
+    branch = b
+    var tabs = document.querySelectorAll('.tab')
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('on', tabs[i].getAttribute('data-b') === b)
+    if (state && state.branches[b]) {
+      geom = prepare(state.branches[b])
+      var st = state.branches[b].stats
+      document.getElementById('n').textContent = st.n
+      document.getElementById('e').textContent = st.e
+      document.getElementById('r').textContent = Math.round(st.meanRecall * 100) + '%'
+      document.getElementById('sub').textContent = (state.branches[b].label || '') + ' · ' + (state.branches[b].sub || '')
+      document.getElementById('age').textContent = '最久 ' + st.oldestDays + ' 天'
+      // 「她现在」：心情 + 刚做完的事，来自 state.me
+      var me = state.branches[b] && state.branches[b].me
+      var md = document.getElementById('mood')
+      if (me && md) {
+        var did =
+          me.last === 'meme' ? '刚翻完热榜' :
+          me.last === 'anime' ? '刚看了会儿动画' :
+          me.last === 'thought' ? '刚读了几页书' :
+          me.last === 'curiosity' ? '刚琢磨了会儿一个词' :
+          me.last === 'idle' ? '在发呆' : ''
+        md.innerHTML = '<b>' + (me.line || '') + '</b>' + (did ? ' · ' + did : '')
+      }
+    }
+  }
+
+  var etag = ''
+  function load() {
+    fetch('/state?k=' + encodeURIComponent(KEY), { headers: Object.assign({ 'ngrok-skip-browser-warning': '1' }, etag ? { 'If-None-Match': etag } : {}), cache: 'no-store' })
+      .then(function (r) {
+        if (r.status === 304) return null
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        etag = r.headers.get('ETag') || ''
+        return r.json()
+      })
+      .then(function (j) {
+        if (!j) return
+        state = j
+        if (hint.dataset.shown !== '1') {
+          hint.dataset.shown = '1'
+          hint.innerHTML = '单指旋转 · 双指缩放 · 双击复位'
+          hint.style.opacity = '1'
+          setTimeout(function () { hint.style.opacity = '0'; setTimeout(function () { hint.classList.add('hidden') }, 600) }, 2200)
+        }
+        setTab(branch)
+      })
+      .catch(function (e) {
+        hint.classList.remove('hidden')
+        hint.textContent = '连不上宿主：' + e.message
+      })
+  }
+
+  document.querySelectorAll('.tab').forEach(function (el) {
+    el.addEventListener('click', function () { setTab(el.getAttribute('data-b')) })
+  })
+
+  // 手指转
+  // ---- 手势 ----
+  // 单指：旋转     双指：捏合缩放 + 拖动平移     双击：回到默认
+  var ZOOM_MIN = 0.45, ZOOM_MAX = 6
+  var pointers = new Map()
+  var pinchDist = 0
+  var pinchMid = null
+  var lastTap = 0
+
+  function pts() {
+    var out = []
+    pointers.forEach(function (v) { out.push(v) })
+    return out
+  }
+  function span(a, b) { return Math.hypot(a.x - b.x, a.y - b.y) }
+  function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
+  function clampZoom(z) { return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z)) }
+
+  function resetView() {
+    tgt.zoom = 1
+    tgt.panX = 0
+    tgt.panY = 0
+    view.yaw = HOME.yaw
+    tgt.pitch = HOME.pitch
+    vel.yaw = 0
+    vel.pitch = 0
+  }
+
+
+  cv.addEventListener('pointerdown', function (e) {
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, moved: 0 })
+    cv.setPointerCapture && cv.setPointerCapture(e.pointerId)
+    var p = pts()
+    if (p.length === 2) { pinchDist = span(p[0], p[1]); pinchMid = mid(p[0], p[1]) }
+  })
+
+  cv.addEventListener('pointermove', function (e) {
+    var cur = pointers.get(e.pointerId)
+    if (!cur) return
+    var dx = e.clientX - cur.x
+    var dy = e.clientY - cur.y
+    cur.x = e.clientX
+    cur.y = e.clientY
+    cur.moved += Math.abs(dx) + Math.abs(dy)
+    var p = pts()
+
+    if (p.length >= 2) {
+      // 捏合 = 缩放（和桌面滚轮同一个量）
+      var d = span(p[0], p[1])
+      if (pinchDist > 0 && d > 0) tgt.zoom = clampZoom(tgt.zoom * (d / pinchDist))
+      pinchDist = d
+      // 双指拖动 = 平移画面
+      var m = mid(p[0], p[1])
+      if (pinchMid) {
+        tgt.panX += m.x - pinchMid.x
+        tgt.panY += m.y - pinchMid.y
+      }
+      pinchMid = m
+      return
+    }
+
+    // 单指旋转，顺手记角速度给松手后的惯性
+    view.yaw += dx * 0.008
+    tgt.pitch = Math.max(-1.5, Math.min(1.5, tgt.pitch + dy * 0.006))
+    vel.yaw = dx * 0.008
+    vel.pitch = dy * 0.006
+  })
+
+  var cardEl = document.getElementById('card')
+  var hitPx = null, hitPy = null, hitN = 0
+
+  function hitTest(x, y) {
+    if (!hitPx || !hitN) return -1
+    var best = -1, bestD = 26
+    for (var i = 0; i < hitN; i++) {
+      var dx = hitPx[i] - x, dy = hitPy[i] - y
+      var d = Math.sqrt(dx * dx + dy * dy)
+      if (d < bestD) { bestD = d; best = i }
+    }
+    return best
+  }
+
+  function showCard(node) {
+    var age = node.a < 0.04 ? '刚刚' : node.a < 1 ? Math.round(node.a * 24) + ' 小时前' : node.a.toFixed(1) + ' 天前'
+    var rows = node.ev
+      ? [
+          ['类型', node.kind],
+          ['时间', age],
+          ['清晰度', Math.round(node.r * 100) + '%']
+        ]
+      : [
+          ['记得', Math.round(node.r * 100) + '%'],
+          ['年龄', node.a < 0.04 ? '刚刚' : node.a < 1 ? Math.round(node.a * 24) + ' 小时' : node.a.toFixed(1) + ' 天'],
+          ['被想起', (node.hits === undefined ? '—' : node.hits) + ' 次'],
+          ['记忆强度', (node.S ? node.S.toFixed(1) : '—') + ' 天'],
+          ['情绪唤醒', Math.round((node.q || 0) * 100) + '%'],
+          ['干扰', Math.round((node.comp || 0) * 100) + '%']
+        ]
+    var html = '<i style="background:rgb(' + node.tone + ')"></i>' + (node.ev ? (node.full || node.t) : node.t)
+    cardEl.querySelector('.card-t').innerHTML = html
+    cardEl.querySelector('.card-body').innerHTML = rows.map(function (r) {
+      return '<span class="card-kv">' + r[0] + '<b>' + r[1] + '</b></span>'
+    }).join('')
+    cardEl.classList.add('show')
+    // 先把 display 打开再移除 hidden，才有淡入过渡
+    requestAnimationFrame(function () { cardEl.classList.remove('hidden') })
+  }
+  function hideCard() {
+    cardEl.classList.add('hidden')
+    setTimeout(function () {
+      if (cardEl.classList.contains('hidden')) cardEl.classList.remove('show')
+    }, 220)
+  }
+
+  function endPointer(e) {
+    var wasSingle = pointers.size === 1
+    var ptr = pointers.get(e.pointerId)
+    var isTap = wasSingle && ptr && ptr.moved < 14
+    pointers.delete(e.pointerId)
+    if (pointers.size < 2) { pinchDist = 0; pinchMid = null }
+    if (pointers.size === 0 && isTap) {
+      vel.yaw = 0
+      vel.pitch = 0
+      var hit = hitTest(e.clientX, e.clientY)
+      if (hit >= 0 && geom && geom.nodes[hit]) {
+        showCard(geom.nodes[hit])
+        lastTap = 0            // 点中东西就不参与双击判定
+      } else {
+        hideCard()
+        var now = Date.now()
+        if (now - lastTap < 320) { resetView(); lastTap = 0 }
+        else lastTap = now
+      }
+    } else if (pointers.size === 0) {
+      lastTap = 0
+    }
+  }
+  cv.addEventListener('pointerup', endPointer)
+  cv.addEventListener('pointercancel', endPointer)
+
+  // 桌面浏览器里滚轮也能缩放，方便调试
+  cv.addEventListener('wheel', function (e) {
+    e.preventDefault()
+    tgt.zoom = clampZoom(tgt.zoom * (e.deltaY > 0 ? 0.92 : 1.08))
+  }, { passive: false })
+
+  window.addEventListener('resize', resize)
+  resize()
+  requestAnimationFrame(frame)
+  load()
+  setInterval(load, 8000)
+})()
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "name": "dsh-whale-brain",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "把小鲸鱼的经历养成两颗粒子大脑：私聊一个自我、群聊一个自我，概念从语料里自己长出来，越旧的记忆越往外发散、越远忘得越多，闲下来还会自己去上网想明白一个词。",
+  "license": "MIT",
+  "author": "moguxx",
+  "homepage": "https://github.com/moguxx/dsh-whale-brain",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moguxx/dsh-whale-brain.git"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "particle",
+    "memory",
+    "visualization"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "client",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "mobile.html"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  }
+}

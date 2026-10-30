@@ -1,0 +1,8 @@
+# dsh-whale-brain —— bundle patch 层
+#
+# 装进 profile 后贡献的配置层：安装器读 package.json 的 dsh.bundle.patch 指向本文件，
+# 把下面这行插入配置树并挂载插件入口（index.js）。
+# id 与 name 都要和 package.json 的 name 一致。
+- insert:
+    - id: dsh-whale-brain
+      name: 'dsh-whale-brain'
