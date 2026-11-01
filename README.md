@@ -4,6 +4,21 @@
 > Concepts are not a hardcoded persona; they are discovered from raw conversation. The older a memory gets, the further out it drifts, and the fainter it becomes.
 > When idle, it goes online on its own: looks up a word it keeps thinking about, or checks what anime is airing today.
 
+
+## Meteor Sea — ideas that fall like shooting stars
+
+Above the brain there is a second view: a night sky where **thoughts cross as shooting stars**, right to left, each one carrying its own line of text.
+
+- The sky is a procedurally painted galaxy (nebula washes, a tilted milky band, thousands of stars, limb-darkened core) with a slowly turning sphere of colour-cycling particles at the centre.
+- Ideas are **composed, not authored**: scene × action × mood × question templates, seeded per call and de-duplicated against the last few hundred, so the same sentence does not keep coming back. A new batch is generated each day.
+- Hover (desktop) or tap (mobile) a meteor and it eases to a stop, then shows the whole thought. A click adds a short flash so the tap has a feel.
+- Every 90 seconds a die is rolled. On a hit (0.1%) that thought **becomes a star**: it stays in the sky, twinkles, and is written into the entity's 执念 (open-loop) pool and the chat topic queue — so it comes up later in conversation on its own.
+
+## Mobile — the same three views, on a phone
+
+ `mobile.html` is a self-contained page served by the plugin over LAN/ngrok: **brain / meteor sea / vitals**.
+The vitals view proxies the Life-OS snapshot and renders everything the desktop panel shows — energy, the full chemical list, neural pulse history, open loops, organs, last dream, temperament — and scrolls.
+
 ---
 
 ## What it actually does

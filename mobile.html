@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#000000">
-<title>小鲸鱼 · 粒子大脑</title>
+<title>小鲸鱼 · 粒子大脑 · v15</title>
 <style>
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html,body{margin:0;height:100%;background:#000;overflow:hidden;
@@ -12,7 +12,7 @@
     color:#dfe9f5;overscroll-behavior:none}
   #stage{position:fixed;inset:0}
   canvas{display:block;width:100%;height:100%;touch-action:none}
-  .top{position:fixed;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + 12px) 96px 10px 14px;
+  .top{position:fixed;top:0;left:0;right:0;z-index:10;padding:calc(env(safe-area-inset-top) + 12px) 96px 10px 14px;
     pointer-events:none;z-index:3}
   .title{font-size:14px;font-weight:600;letter-spacing:.3px;flex:1 1 0%;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
   .title small{display:block;font-weight:400;font-size:10.5px;color:#6c8199;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
@@ -41,13 +41,31 @@
   .hint{transition:opacity .6s}
   .mood{margin-top:6px;font-size:11px;color:#5d7f9e;letter-spacing:.3px;min-height:14px}
   .mood b{color:#8fb6d8;font-weight:500}
+.mv-tip{position:absolute;max-width:70vw;padding:8px 11px;border-radius:9px;background:rgba(8,12,22,.94);border:1px solid rgba(120,160,220,.35);color:#dbe8fb;font-size:12px;line-height:1.55;z-index:7;pointer-events:none}
+.top{z-index:20!important}
+.views{position:fixed!important;bottom:calc(env(safe-area-inset-bottom) + 54px)!important;left:14px!important;right:auto!important;margin:0!important;z-index:999!important;pointer-events:auto!important}
+.vbtn{pointer-events:auto!important}
+.lv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.lv-kv{display:flex;justify-content:space-between;font-size:11.5px;color:#7d94ab;border-bottom:1px solid rgba(120,160,220,.12);padding-bottom:6px}
+.lv-kv b{color:#cfe3ff;font-weight:500}
+.lv-sec{margin:18px 0 8px;font-size:12px;color:#8fb0cc;letter-spacing:.3px}
+.lv-list{font-size:11.5px;color:#8ea6bd;line-height:1.55}
+.lv-item{padding:6px 0;border-bottom:1px solid rgba(120,160,220,.1)}
+.lv-item b{color:#cfe3ff;font-weight:500}
+.lv-item i{float:right;font-style:normal;color:#6f8aa6}
+.lv-dream{font-size:11.5px;color:#9db4c9;line-height:1.6;white-space:pre-wrap}
 </style>
 </head>
 <body>
 <div id="stage"><canvas id="cv"></canvas></div>
 <div class="top">
-  <div class="title">小鲸鱼 · 粒子大脑<small id="sub">正在连…</small></div>
+  <div class="title">小鲸鱼 · 粒子大脑 · v15<small id="sub">正在连…</small></div>
   <div id="mood" class="mood"></div>
+  <div class="views">
+    <button class="vbtn on" data-v="brain">大脑</button>
+    <button class="vbtn" data-v="meteor">灵感海</button>
+    <button class="vbtn" data-v="life">生命体征</button>
+  </div>
   <div class="tabs">
     <button class="tab on" data-b="private">私聊</button>
     <button class="tab" data-b="group">群聊</button>
@@ -69,6 +87,8 @@
 (function () {
   'use strict'
   var KEY = '__KEY__'
+  // 页面里的所有请求都要带访问密钥，否则服务器直接 401（数据就永远不出来）
+  function api(p) { return p + (p.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(KEY) }
   var cv = document.getElementById('cv')
   var ctx = cv.getContext('2d')
   var hint = document.getElementById('hint')
@@ -791,6 +811,10 @@
     tgt.zoom = clampZoom(tgt.zoom * (e.deltaY > 0 ? 0.92 : 1.08))
   }, { passive: false })
 
+  window.onerror = function (msg) {
+    var el = document.getElementById('mvErr')
+    if (el) el.textContent = '出错：' + msg
+  }
   window.addEventListener('resize', resize)
   resize()
   requestAnimationFrame(frame)
@@ -798,5 +822,373 @@
   setInterval(load, 8000)
 })()
 </script>
+<!-- ── 灵感海 / 生命体征（手机端）── -->
+<div id="mv" class="mv hidden">
+  <canvas id="mcv"></canvas>
+  <div class="mv-hud">
+    <div class="mv-t">灵感海</div>
+    <div class="mv-s">念头一阵一阵划过；被抓住的会留下来</div>
+    <div id="mvErr" style="margin-top:6px;font-size:10.5px;color:#ff9aa4"></div>
+  </div>
+</div>
+<div id="lv" class="lv hidden">
+  <div class="lv-t">生命体征</div>
+  <div class="lv-row"><span>能量</span><div class="lv-bar"><i id="lvE"></i></div><b id="lvEN">–</b></div>
+  <div id="lvChems"></div>
+
+  <div class="lv-sec">神经脉冲</div>
+  <canvas id="lvPulse" width="600" height="120" style="width:100%;height:70px"></canvas>
+
+  <div class="lv-sec">执念</div>
+  <div id="lvGaps" class="lv-list"></div>
+
+  <div class="lv-sec">器官生态</div>
+  <div id="lvOrgans" class="lv-list"></div>
+
+  <div class="lv-sec">上一场梦</div>
+  <div id="lvDream" class="lv-dream">—</div>
+
+  <div class="lv-sec">气质</div>
+  <div id="lvTemp" class="lv-list"></div>
+
+  <div id="lvExtra" class="lv-grid"></div>
+  <div class="lv-note" id="lvNote">—</div>
+</div>
+<style>
+.mv,.lv{position:fixed;inset:0;z-index:5;background:#05060c}
+.hidden{display:none!important}
+.mv canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.mv-hud{position:absolute;left:18px;top:96px;color:#cfe3ff}
+.mv-t{font-size:14px;font-weight:600;opacity:.92}
+.mv-s{margin-top:4px;font-size:10.5px;opacity:.45}
+.lv{padding:64px 22px 110px;box-sizing:border-box;color:#cfe3ff;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.lv-t{font-size:14px;font-weight:600;opacity:.92;margin-bottom:18px}
+.lv-row{display:flex;align-items:center;gap:10px;margin-bottom:14px;font-size:12px}
+.lv-row span{width:52px;opacity:.65}
+.lv-bar{flex:1;height:6px;border-radius:3px;background:rgba(120,160,220,.16);overflow:hidden}
+.lv-bar i{display:block;height:100%;width:0;border-radius:3px;background:linear-gradient(90deg,#5aa9ff,#8f7bff);transition:width .5s}
+.lv-row b{width:42px;text-align:right;font-weight:500;color:#9fc0e0}
+.lv-note{margin-top:22px;font-size:10.5px;color:#5d7290;line-height:1.6}
+.views{display:flex;gap:8px;margin-top:10px;pointer-events:auto;position:relative;z-index:6}
+.vbtn{padding:6px 12px;border-radius:999px;border:1px solid rgba(120,170,255,.28);background:rgba(20,30,50,.5);color:#9fc0e0;font-size:11.5px}
+.vbtn.on{background:rgba(90,150,255,.22);border-color:rgba(120,190,255,.6);color:#dbe8fb}
+</style>
+<script>
+(function () {
+  // 这段脚本是独立作用域，主脚本里的 api() 看不到，必须自己定义一份
+  var K2 = (new URLSearchParams(location.search)).get('k') || ''
+  function api(p) { return p + (p.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(K2) }
+  var mv = document.getElementById('mv')
+  var lv = document.getElementById('lv')
+  var mcv = document.getElementById('mcv')
+  var g = mcv.getContext('2d')
+  var raf = 0, W = 0, H = 0, DPR = 1
+  var meteors = [], stars = [], pool = [], poolAt = 0, lastSpawn = 0
+  var running = false
+
+  function resize() {
+    var r = mcv.getBoundingClientRect()
+    W = Math.max(240, Math.round(r.width) || 360)
+    H = Math.max(300, Math.round(r.height) || 640)
+    DPR = Math.min(2, window.devicePixelRatio || 1)
+    mcv.width = Math.round(W * DPR)
+    mcv.height = Math.round(H * DPR)
+    g.setTransform(DPR, 0, 0, DPR, 0, 0)
+  }
+
+  function nextIdea() {
+    if (!pool.length || Date.now() - poolAt > 60000) {
+      poolAt = Date.now()
+      fetch(api('/meteors/pool?n=16'), { headers: { 'ngrok-skip-browser-warning': '1' }, cache: 'no-store' }).then(function (r) { return r.json() }).then(function (j) {
+        if (j && j.ok && j.ideas) pool = j.ideas
+      }).catch(function () {})
+    }
+    return pool.length ? (pool.shift().text || '') : '…'
+  }
+
+  function spawn() {
+    var sp = 1.1 + Math.random() * 1.4
+    var ang = 0.22 + Math.random() * 0.14
+    meteors.push({
+      x: W + 40, y: H * (0.08 + Math.random() * 0.6),
+      vx: -Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+      len: 120 + Math.random() * 140, w: 1.1 + Math.random() * 0.8,
+      phase: Math.random() * 6.283, idea: nextIdea(), life: 0, max: 2400, flash: 0,
+    })
+  }
+
+  function colorOf(t, ph) {
+    var k = 0.5 + 0.5 * Math.sin(t * 0.45 + ph)
+    var r, gg, b
+    if (k < 0.5) { var kk = k * 2; r = 80 + (70 - 80) * kk; gg = 235 + (150 - 235) * kk; b = 170 + (255 - 170) * kk }
+    else { var k2 = (k - 0.5) * 2; r = 70 + (185 - 70) * k2; gg = 150 + (120 - 150) * k2; b = 255 }
+    return [Math.round(r), Math.round(gg), Math.round(b)]
+  }
+
+  function frame(now) {
+    var t = now / 1000
+    g.globalCompositeOperation = 'source-over'
+    g.globalAlpha = 1
+    var bg = g.createLinearGradient(0, 0, W * 0.4, H)
+    bg.addColorStop(0, '#050816'); bg.addColorStop(0.5, '#070b1c'); bg.addColorStop(1, '#03040c')
+    g.fillStyle = bg; g.fillRect(0, 0, W, H)
+
+    // 银河带（简化）
+    g.save(); g.translate(W * 0.5, H * 0.5); g.rotate(-0.4)
+    for (var i = 0; i < 14; i++) {
+      var px = (i / 13 - 0.5) * W * 1.6
+      var pr = Math.min(W, H) * (0.12 + Math.sin((i / 13) * Math.PI) * 0.26)
+      var rg = g.createRadialGradient(px, 0, 0, px, 0, pr)
+      rg.addColorStop(0, 'rgba(140,160,255,0.06)'); rg.addColorStop(1, 'rgba(0,0,0,0)')
+      g.fillStyle = rg; g.fillRect(px - pr, -pr, pr * 2, pr * 2)
+    }
+    g.restore()
+
+    // 中心的粒子球
+    var sR = Math.min(W, H) * 0.2, sx = W * 0.5, sy = H * 0.52
+    var halo = g.createRadialGradient(sx, sy, sR * 0.2, sx, sy, sR * 1.8)
+    halo.addColorStop(0, 'rgba(120,140,255,0.26)'); halo.addColorStop(1, 'rgba(80,60,200,0)')
+    g.fillStyle = halo; g.beginPath(); g.arc(sx, sy, sR * 1.8, 0, 6.283); g.fill()
+    g.globalCompositeOperation = 'lighter'
+    for (var p = 0; p < 240; p++) {
+      var phi = Math.acos(1 - (2 * (p + 0.5)) / 240), th = p * 2.399963
+      var bx = Math.sin(phi) * Math.cos(th), by = Math.cos(phi), bz = Math.sin(phi) * Math.sin(th)
+      var ca = Math.cos(t * 0.32), sa = Math.sin(t * 0.32)
+      var rx = bx * ca - bz * sa, rz = bx * sa + bz * ca
+      var dep = (rz + 1) / 2
+      var lat = (by + 1) / 2
+      var col = colorOf(t + lat * 2, 0)
+      g.fillStyle = 'rgba(' + col[0] + ',' + col[1] + ',' + col[2] + ',' + (0.2 + dep * 0.7).toFixed(3) + ')'
+      g.beginPath(); g.arc(sx + rx * sR, sy + by * sR, 0.7 + dep * 1.8, 0, 6.283); g.fill()
+    }
+    g.globalCompositeOperation = 'source-over'
+
+    // 落星
+    for (var s = 0; s < stars.length; s++) {
+      var st = stars[s], tw = 0.55 + 0.45 * Math.sin(t * 1.4 + s)
+      g.globalCompositeOperation = 'lighter'
+      var sg = g.createRadialGradient(st.x * W, st.y * H, 0, st.x * W, st.y * H, 18)
+      sg.addColorStop(0, 'rgba(255,208,120,' + (0.3 * tw).toFixed(3) + ')'); sg.addColorStop(1, 'rgba(0,0,0,0)')
+      g.fillStyle = sg; g.beginPath(); g.arc(st.x * W, st.y * H, 18, 0, 6.283); g.fill()
+      g.fillStyle = 'rgba(255,255,255,' + (0.8 * tw).toFixed(3) + ')'
+      g.beginPath(); g.arc(st.x * W, st.y * H, 1.6, 0, 6.283); g.fill()
+      g.globalCompositeOperation = 'source-over'
+    }
+
+    if (now - lastSpawn > 900 + Math.random() * 1200 && meteors.length < 10) { lastSpawn = now; spawn() }
+    for (var m = meteors.length - 1; m >= 0; m--) {
+      var mm = meteors[m]
+      if (!mm.pause) { mm.x += mm.vx; mm.y += mm.vy; mm.life++ }
+      var col2 = colorOf(t, mm.phase)
+      var tx = mm.x - mm.vx * (mm.len / 3), ty = mm.y - mm.vy * (mm.len / 3)
+      var lg = g.createLinearGradient(tx, ty, mm.x, mm.y)
+      lg.addColorStop(0, 'rgba(' + col2.join(',') + ',0)')
+      lg.addColorStop(0.6, 'rgba(' + col2.join(',') + ',0.18)')
+      lg.addColorStop(1, 'rgba(' + col2.join(',') + ',0.66)')
+      g.strokeStyle = lg; g.lineWidth = mm.w * 1.5; g.lineCap = 'round'
+      g.beginPath(); g.moveTo(tx, ty); g.lineTo(mm.x, mm.y); g.stroke()
+
+      if (mm.flash > 0.02) {
+        var fa = mm.flash
+        g.globalCompositeOperation = 'lighter'
+        g.strokeStyle = 'rgba(255,255,255,' + (0.55 * fa).toFixed(3) + ')'
+        g.lineWidth = 1.4 + fa * 1.6
+        g.beginPath()
+        g.arc(mm.x, mm.y, mm.w * (3 + (1 - fa) * 12), 0, 6.283)
+        g.stroke()
+        g.globalCompositeOperation = 'source-over'
+        mm.flash *= 0.88
+      }
+
+      g.globalCompositeOperation = 'lighter'
+      var hgd = g.createRadialGradient(mm.x, mm.y, 0, mm.x, mm.y, mm.w * 5)
+      hgd.addColorStop(0, 'rgba(255,255,255,0.95)')
+      hgd.addColorStop(0.4, 'rgba(' + col2.join(',') + ',0.6)')
+      hgd.addColorStop(1, 'rgba(0,0,0,0)')
+      g.fillStyle = hgd; g.beginPath(); g.arc(mm.x, mm.y, mm.w * 5, 0, 6.283); g.fill()
+      g.globalCompositeOperation = 'source-over'
+
+      if (mm.idea && m < 2) {
+        g.font = '10px -apple-system, system-ui, sans-serif'
+        g.fillStyle = 'rgba(220,235,252,0.6)'
+        g.fillText(mm.idea.length > 7 ? mm.idea.slice(0, 7) + '…' : mm.idea, mm.x + 10, mm.y - 8 - m * 11)
+      }
+      if (mm.x < -200 || mm.y > H + 120 || mm.life > mm.max) meteors.splice(m, 1)
+    }
+    raf = requestAnimationFrame(frame)
+  }
+
+  function start() {
+    if (running) return
+    running = true
+    resize()
+    raf = requestAnimationFrame(frame)
+    fetch(api('/meteors/state'), { headers: { 'ngrok-skip-browser-warning': '1' }, cache: 'no-store' }).then(function (r) { return r.json() }).then(function (j) {
+      if (j && j.ok) stars = (j.promoted || []).slice(-8).map(function (x, i) {
+        return { x: 0.18 + ((i * 0.37) % 0.66), y: 0.16 + ((i * 0.29) % 0.56) }
+      })
+    }).catch(function () {})
+  }
+  function stop() {
+    running = false
+    cancelAnimationFrame(raf)
+  }
+
+  function bar(id, v, max, color) {
+    var el = document.getElementById(id)
+    if (el) el.style.width = Math.max(0, Math.min(100, (v / (max || 100)) * 100)) + '%'
+    if (color) { var b = el && el.parentNode; if (b) b.style.boxShadow = 'inset 0 0 0 1px ' + color }
+  }
+
+  function drawPulse(list) {
+    var cv2 = document.getElementById('lvPulse')
+    if (!cv2 || !list || !list.length) return
+    var c2 = cv2.getContext('2d')
+    var w = cv2.width, h = cv2.height
+    c2.clearRect(0, 0, w, h)
+    function line(key, color) {
+      c2.beginPath()
+      for (var i = 0; i < list.length; i++) {
+        var v = Number(list[i][key] || 0)
+        var x = (i / (list.length - 1)) * w
+        var y = h - Math.max(0, Math.min(1, v / 100)) * (h - 8) - 4
+        if (i === 0) c2.moveTo(x, y); else c2.lineTo(x, y)
+      }
+      c2.strokeStyle = color
+      c2.lineWidth = 1.6
+      c2.stroke()
+    }
+    line('energy', 'rgba(120,200,255,.75)')
+    line('dopamine', 'rgba(240,171,252,.7)')
+    line('cortisol', 'rgba(255,150,150,.55)')
+    line('serotonin', 'rgba(150,255,190,.55)')
+  }
+
+  function showLife() {
+    var note = document.getElementById('lvNote')
+    fetch(api('/life/full'), { headers: { 'ngrok-skip-browser-warning': '1' }, cache: 'no-store' })
+      .then(function (r) { return r.json() })
+      .then(function (j) {
+        if (!j || !j.soma) { note.textContent = '观测台连不上（8787 未启动）'; return }
+        var soma = j.soma || {}
+        document.getElementById('lvEN').textContent = Math.round(soma.energy || 0)
+        bar('lvE', soma.energy || 0, soma.maxEnergy || 200)
+        var rest = soma.rest || {}
+        document.getElementById('lvNote').textContent =
+          '状态：' + (rest.mode || (soma.frozen ? '冻结' : '清醒')) +
+          ' ｜ 回能上限 ' + (rest.cap || '-') +
+          ' ｜ 积分 ' + Math.round(soma.scars || 0)
+
+        var box = document.getElementById('lvChems')
+        if (box) {
+          var list = j.chemicals || []
+          box.innerHTML = list.map(function (c) {
+            var pct = Math.max(0, Math.min(100, ((c.value - c.min) / (c.max - c.min)) * 100))
+            return '<div class="lv-row"><span>' + c.label + '</span>' +
+              '<div class="lv-bar"><i style="width:' + pct + '%;background:linear-gradient(90deg,' + c.color + ',rgba(255,255,255,.5))"></i></div>' +
+              '<b>' + Math.round(c.value) + '</b></div>'
+          }).join('')
+        }
+
+        drawPulse(j.pulseHistory || [])
+
+        var gaps = (j.gaps || []).slice(0, 8)
+        var gEl = document.getElementById('lvGaps')
+        if (gEl) {
+          gEl.innerHTML = gaps.length
+            ? gaps.map(function (g) {
+                var t = String(g.summary || '').slice(0, 46)
+                return '<div class="lv-item"><b>' + t + '</b><i>' + Math.round(g.tension || 0) + '</i></div>'
+              }).join('')
+            : '<div class="lv-item">还没有执念</div>'
+        }
+
+        var og = document.getElementById('lvOrgans')
+        if (og) {
+          var list2 = j.organs || []
+          og.innerHTML = list2.length
+            ? list2.map(function (o) {
+                return '<div class="lv-item"><b>' + (o.name || '?') + '</b> <span style="opacity:.6">v' + (o.version || '') + '</span><i>' + (o.status || '') + '</i></div>'
+              }).join('')
+            : '<div class="lv-item">还没长器官</div>'
+        }
+
+        var dm = document.getElementById('lvDream')
+        if (dm) dm.textContent = (j.lastDream && (j.lastDream.text || j.lastDream.summary)) || '还没做过梦'
+
+        var tp = document.getElementById('lvTemp')
+        if (tp) {
+          var t2 = (j.genome && j.genome.temperament) || {}
+          var keys = Object.keys(t2)
+          tp.innerHTML = keys.length
+            ? keys.map(function (k) {
+                var v = t2[k]
+                if (typeof v === 'object') return ''
+                return '<div class="lv-item"><b>' + k + '</b><i>' + v + '</i></div>'
+              }).join('')
+            : '<div class="lv-item">没有气质数据</div>'
+        }
+
+        var extra = document.getElementById('lvExtra')
+        if (extra) {
+          var c2 = j.counters || {}
+          extra.innerHTML =
+            '<div class="lv-kv"><span>请求</span><b>' + (c2.totalRequests || 0) + '</b></div>' +
+            '<div class="lv-kv"><span>轮次</span><b>' + (c2.totalTurns || 0) + '</b></div>' +
+            '<div class="lv-kv"><span>被拦</span><b>' + (c2.blockedRequests || 0) + '</b></div>' +
+            '<div class="lv-kv"><span>执念</span><b>' + ((j.gaps || []).length) + '</b></div>' +
+            '<div class="lv-kv"><span>器官</span><b>' + ((j.organs || []).length) + '</b></div>'
+        }
+      })
+      .catch(function (e) {
+        note.textContent = '请求失败：' + (e && e.message)
+      })
+  }
+
+  // 点流星：冻结并显示全文（上一次重写面板时被切掉了，加回来）
+  var mvTip = document.createElement('div')
+  mvTip.className = 'mv-tip'
+  mvTip.style.display = 'none'
+  document.getElementById('mv').appendChild(mvTip)
+
+  mcv.addEventListener('pointerdown', function (e) {
+    var r = mcv.getBoundingClientRect()
+    var x = e.clientX - r.left
+    var y = e.clientY - r.top
+    var best = -1
+    var bestD = 40
+    for (var i = 0; i < meteors.length; i++) {
+      var d = Math.hypot(meteors[i].x - x, meteors[i].y - y)
+      if (d < bestD) { bestD = d; best = i }
+    }
+    if (best >= 0) {
+      var m = meteors[best]
+      m.pause = !m.pause
+      m.flash = 1
+      mvTip.textContent = m.idea || ''
+      mvTip.style.display = 'block'
+      mvTip.style.left = Math.min(Math.max(8, x + 14), Math.max(8, W - 220)) + 'px'
+      mvTip.style.top = Math.max(8, y - 46) + 'px'
+    } else {
+      mvTip.style.display = 'none'
+      for (var k = 0; k < meteors.length; k++) meteors[k].pause = false
+    }
+  })
+
+  document.querySelectorAll('.vbtn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var v = btn.getAttribute('data-v')
+      document.querySelectorAll('.vbtn').forEach(function (b) { b.classList.toggle('on', b === btn) })
+      mv.classList.toggle('hidden', v !== 'meteor')
+      lv.classList.toggle('hidden', v !== 'life')
+      document.getElementById('stage').classList.toggle('hidden', v !== 'brain')
+      if (v === 'meteor') { start() } else { stop() }
+      if (v === 'life') { showLife() }
+    })
+  })
+  window.addEventListener('resize', function () { if (running) resize() })
+})()
+</script>
+
 </body>
 </html>

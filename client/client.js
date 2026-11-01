@@ -869,6 +869,1237 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── 灵感海：念头像流星划过，被抓住的那几个变成常驻的星 ──
+    // 视觉参考《你的名字》：银河是有厚度的一条带，流星是一颗发光的泪滴拖着小火星。
+    // ── 灵感海 · WebGL 版 ──
+    // 为什么不用 three.js：客户端插件是纯 JS，不能 import npm 包。
+    // 所以手写 WebGL2：银河用已经调好的 2D 底图当纹理（不重写），
+    // 流星和星用加法混合的辉光贴片来画——这一步才是 2D canvas 做不到的"真发光"。
+    function MeteorViewGL() {
+      const glRef = useRef(null)
+      const labelRef = useRef(null)
+      const [tip, setTip] = useState(null)
+      const [stars, setStars] = useState([])
+      const [glErr, setGlErr] = useState("")
+
+      useEffect(() => {
+        const canvas = glRef.current
+        const labelCanvas = labelRef.current
+        if (!canvas) return
+        const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, premultipliedAlpha: false })
+        if (!gl) return
+        const lctx = labelCanvas ? labelCanvas.getContext('2d') : null
+
+        let W = 900
+        let H = 520
+        let DPR = 1
+        let raf = 0
+        let tex = null
+        let nextWaveAt = 0
+        let lastSpawn = 0
+        let waveLeft = 0
+        let pool = []
+        let poolAt = 0
+        const meteors = []
+        const motes = []
+        const sparks = []
+        let starPts = []
+
+        // 鲜艳一点：青 / 紫 / 粉 / 金 / 薄荷，尾部会往蓝里渐变
+        const PALETTE = [
+          [0.25, 0.95, 1.0],
+          [0.72, 0.40, 1.0],
+          [1.0, 0.30, 0.62],
+          [1.0, 0.82, 0.20],
+          [0.30, 1.0, 0.62],
+        ]
+        const TAIL_BLUE = [0.30, 0.55, 1.0]
+
+        // ── shader ──
+        const VS_QUAD = `#version 300 es
+        in vec2 aPos;
+        out vec2 vUV;
+        void main(){
+          vUV = aPos * 0.5 + 0.5;
+          gl_Position = vec4(aPos, 0.0, 1.0);
+        }`
+
+        const FS_BG = `#version 300 es
+        precision highp float;
+        in vec2 vUV;
+        uniform sampler2D uTex;
+        out vec4 outColor;
+        void main(){
+          vec3 c = texture(uTex, vUV).rgb;
+          outColor = vec4(c, 1.0);
+        }`
+
+        const VS_SPRITE = `#version 300 es
+        in vec2 aPos;
+        uniform vec2 uCenter;
+        uniform vec2 uSize;
+        out vec2 vUV;
+        void main(){
+          vUV = aPos;
+          vec2 p = uCenter + aPos * uSize;
+          vec2 clip = (p / uRes) * 2.0 - 1.0;
+          gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+        }`
+
+        const FS_SPRITE = `#version 300 es
+        precision highp float;
+        in vec2 vUV;
+        uniform vec3 uColor;
+        uniform float uAlpha;
+        uniform float uSoft;
+        out vec4 outColor;
+        void main(){
+          float r = length(vUV);
+          if (r > 1.0) discard;
+          float f = exp(-r * r * uSoft);
+          outColor = vec4(uColor * f * uAlpha, f * uAlpha);
+        }`
+
+        function compile(type, src) {
+          const sh = gl.createShader(type)
+          gl.shaderSource(sh, src)
+          gl.compileShader(sh)
+          if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+            console.log('[meteor-gl] shader 编译失败', gl.getShaderInfoLog(sh))
+            return null
+          }
+          return sh
+        }
+        function makeProgram(vsSrc, fsSrc) {
+          const vs = compile(gl.VERTEX_SHADER, vsSrc)
+          const fs = compile(gl.FRAGMENT_SHADER, fsSrc)
+          if (!vs || !fs) return null
+          const p = gl.createProgram()
+          gl.attachShader(p, vs)
+          gl.attachShader(p, fs)
+          gl.linkProgram(p)
+          if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+            console.log('[meteor-gl] link 失败', gl.getProgramInfoLog(p))
+            return null
+          }
+          return p
+        }
+
+        const progBg = makeProgram(VS_QUAD, FS_BG.replace('uRes', 'vec2(1.0)'))
+        const progSprite = makeProgram(VS_SPRITE.replace('void main', 'uniform vec2 uRes;\n        void main'), FS_SPRITE)
+        if (!progBg || !progSprite) return
+
+        const quad = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, quad)
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW)
+
+        function bindQuad(prog, attr) {
+          const loc = gl.getAttribLocation(prog, attr)
+          gl.bindBuffer(gl.ARRAY_BUFFER, quad)
+          gl.enableVertexAttribArray(loc)
+          gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
+          return loc
+        }
+        bindQuad(progBg, 'aPos')
+        bindQuad(progSprite, 'aPos')
+
+        const uResBg = gl.getUniformLocation(progBg, 'uTex')
+        const uRes = gl.getUniformLocation(progSprite, 'uRes')
+        const uCenter = gl.getUniformLocation(progSprite, 'uCenter')
+        const uSize = gl.getUniformLocation(progSprite, 'uSize')
+        const uColor = gl.getUniformLocation(progSprite, 'uColor')
+        const uAlpha = gl.getUniformLocation(progSprite, 'uAlpha')
+        const uSoft = gl.getUniformLocation(progSprite, 'uSoft')
+
+        function drawSprite(x, y, rx, ry, color, alpha, soft) {
+          gl.uniform2f(uCenter, x, y)
+          gl.uniform2f(uSize, rx, ry)
+          gl.uniform3f(uColor, color[0], color[1], color[2])
+          gl.uniform1f(uAlpha, alpha)
+          gl.uniform1f(uSoft, soft)
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+        }
+
+        /** 用 2D 画一张银河当纹理：那套渐变已经调过，重写反而更丑。 */
+        function buildGalaxyTexture() {
+          const c = document.createElement('canvas')
+          c.width = Math.max(1, Math.round(W * DPR))
+          c.height = Math.max(1, Math.round(H * DPR))
+          const x = c.getContext('2d')
+          x.scale(DPR, DPR)
+
+          // 底色：不是死黑，是带一点靛蓝的夜
+          const base = x.createLinearGradient(0, 0, W * 0.2, H)
+          base.addColorStop(0, '#050816')
+          base.addColorStop(0.42, '#070b1c')
+          base.addColorStop(1, '#03040c')
+          x.fillStyle = base
+          x.fillRect(0, 0, W, H)
+
+          // 远处的大片星云：色相分开，青紫粉各占一角
+          const clouds = [
+            { x: 0.16, y: 0.2, r: 0.52, c: '80,110,230', a: 0.16 },
+            { x: 0.84, y: 0.28, r: 0.46, c: '160,70,190', a: 0.12 },
+            { x: 0.62, y: 0.84, r: 0.5, c: '40,150,190', a: 0.10 },
+            { x: 0.3, y: 0.7, r: 0.38, c: '200,90,150', a: 0.07 },
+          ]
+          for (const cl of clouds) {
+            const rad = Math.max(W, H) * cl.r
+            const rg = x.createRadialGradient(cl.x * W, cl.y * H, 0, cl.x * W, cl.y * H, rad)
+            rg.addColorStop(0, 'rgba(' + cl.c + ',' + cl.a + ')')
+            rg.addColorStop(0.45, 'rgba(' + cl.c + ',' + (cl.a * 0.4).toFixed(3) + ')')
+            rg.addColorStop(1, 'rgba(' + cl.c + ',0)')
+            x.fillStyle = rg
+            x.fillRect(0, 0, W, H)
+          }
+
+          const band = -0.42
+          const cx = W * 0.5
+          const cy = H * 0.52
+          const diag = Math.hypot(W, H)
+
+          // 银河主体：两层不同宽度，宽的做光晕、窄的做芯
+          x.save()
+          x.translate(cx, cy)
+          x.rotate(band)
+          for (let layer = 0; layer < 2; layer += 1) {
+            const wide = layer === 0
+            for (let i = 0; i < 24; i += 1) {
+              const t = i / 23
+              const px = (t - 0.5) * diag * 1.25
+              const pr = Math.min(W, H) * (wide ? 0.42 + Math.sin(t * Math.PI) * 0.4 : 0.16 + Math.sin(t * Math.PI) * 0.14)
+              const rg = x.createRadialGradient(px, 0, 0, px, 0, pr)
+              const alpha = wide ? 0.035 : 0.075
+              rg.addColorStop(0, 'rgba(150,170,255,' + alpha + ')')
+              rg.addColorStop(0.55, 'rgba(110,120,215,' + (alpha * 0.45).toFixed(3) + ')')
+              rg.addColorStop(1, 'rgba(60,70,150,0)')
+              x.fillStyle = rg
+              x.fillRect(px - pr, -pr, pr * 2, pr * 2)
+            }
+          }
+          // 带里的密集细星：这是"银河"的质感来源
+          for (let i = 0; i < 4200; i += 1) {
+            const t = Math.random()
+            const px = (t - 0.5) * diag * 1.25
+            const spread = Math.min(W, H) * (0.05 + Math.sin(t * Math.PI) * 0.2)
+            const py = (Math.random() - 0.5) * spread * 2 * (0.35 + Math.random() * 0.65)
+            const wx = cx + px * Math.cos(band) - py * Math.sin(band)
+            const wy = cy + px * Math.sin(band) + py * Math.cos(band)
+            if (wx < -5 || wx > W + 5 || wy < -5 || wy > H + 5) continue
+            const r = Math.random() < 0.93 ? 0.35 + Math.random() * 0.45 : 0.8 + Math.random() * 0.9
+            const roll = Math.random()
+            const col = roll < 0.16 ? '255,226,190' : roll < 0.34 ? '190,210,255' : '228,238,255'
+            x.fillStyle = 'rgba(' + col + ',' + (0.1 + Math.random() * 0.62).toFixed(3) + ')'
+            x.beginPath()
+            x.arc(wx, wy, r, 0, Math.PI * 2)
+            x.fill()
+          }
+
+          // 带外散星
+          for (let i = 0; i < 1100; i += 1) {
+            const px = Math.random() * W
+            const py = Math.random() * H
+            const r = Math.random() < 0.88 ? 0.35 + Math.random() * 0.5 : 0.8 + Math.random() * 0.8
+            x.fillStyle = 'rgba(200,215,255,' + (0.05 + Math.random() * 0.5).toFixed(3) + ')'
+            x.beginPath()
+            x.arc(px, py, r, 0, Math.PI * 2)
+            x.fill()
+          }
+
+          // 十几颗亮星，带衍射星芒
+          for (let i = 0; i < 16; i += 1) {
+            const px = Math.random() * W
+            const py = Math.random() * H
+            const r = 1.2 + Math.random() * 1.1
+            const glow = x.createRadialGradient(px, py, 0, px, py, r * 10)
+            glow.addColorStop(0, 'rgba(255,255,255,0.9)')
+            glow.addColorStop(0.25, 'rgba(200,222,255,0.3)')
+            glow.addColorStop(1, 'rgba(120,150,255,0)')
+            x.fillStyle = glow
+            x.beginPath()
+            x.arc(px, py, r * 10, 0, Math.PI * 2)
+            x.fill()
+            x.strokeStyle = 'rgba(210,230,255,0.16)'
+            x.lineWidth = 0.8
+            x.beginPath()
+            x.moveTo(px - r * 8, py)
+            x.lineTo(px + r * 8, py)
+            x.moveTo(px, py - r * 8)
+            x.lineTo(px, py + r * 8)
+            x.stroke()
+          }
+
+          // 银河核心：一团偏暖的亮斑，照片里的"爆心"就是它
+          x.save()
+          x.translate(cx, cy)
+          x.rotate(band)
+          const coreX = (Math.random() - 0.5) * W * 0.35
+          const coreR = Math.min(W, H) * 0.3
+          const cg = x.createRadialGradient(coreX, 0, 0, coreX, 0, coreR)
+          cg.addColorStop(0, 'rgba(255,244,220,0.30)')
+          cg.addColorStop(0.25, 'rgba(255,225,180,0.14)')
+          cg.addColorStop(0.6, 'rgba(200,180,255,0.05)')
+          cg.addColorStop(1, 'rgba(120,130,255,0)')
+          x.fillStyle = cg
+          x.fillRect(coreX - coreR, -coreR, coreR * 2, coreR * 2)
+
+
+          // 暗角压得很轻，别把银河也压扁
+          const vig = x.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.3, W * 0.5, H * 0.5, Math.max(W, H) * 0.8)
+          vig.addColorStop(0, 'rgba(0,0,0,0)')
+          vig.addColorStop(1, 'rgba(0,0,0,0.42)')
+          x.fillStyle = vig
+          x.fillRect(0, 0, W, H)
+
+          if (tex) gl.deleteTexture(tex)
+          tex = gl.createTexture()
+          gl.bindTexture(gl.TEXTURE_2D, tex)
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c)
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+        }
+
+        function resize() {
+          const rect = canvas.getBoundingClientRect()
+          W = Math.max(320, Math.round(rect.width) || 900)
+          H = Math.max(260, Math.round(rect.height) || 520)
+          DPR = Math.min(2, window.devicePixelRatio || 1)
+          canvas.width = Math.round(W * DPR)
+          canvas.height = Math.round(H * DPR)
+          if (labelCanvas) {
+            labelCanvas.width = Math.round(W * DPR)
+            labelCanvas.height = Math.round(H * DPR)
+            if (lctx) lctx.setTransform(DPR, 0, 0, DPR, 0, 0)
+          }
+          gl.viewport(0, 0, canvas.width, canvas.height)
+          buildGalaxyTexture()
+          placeStars(starPts.map((s) => s.raw))
+        }
+
+        function placeStars(list) {
+          const src = Array.isArray(list) ? list : []
+          starPts = src.slice(-12).map((item, i) => ({
+            raw: item,
+            x: (0.1 + ((i * 0.41) % 0.78)) * W,
+            y: (0.12 + ((i * 0.33) % 0.62)) * H,
+            p: i * 1.7,
+            r: 1.2 + (i % 3) * 0.3,
+          }))
+        }
+
+        function nextIdea() {
+          if (!pool.length || Date.now() - poolAt > 60000) {
+            poolAt = Date.now()
+            fetch('/meteors/pool?n=16', { cache: 'no-store' })
+              .then((r) => r.json())
+              .then((j) => {
+                if (j && j.ok && Array.isArray(j.ideas) && j.ideas.length) pool = j.ideas
+              })
+              .catch(() => {})
+          }
+          if (!pool.length) return '（还没想出什么）'
+          return pool.shift().text || ''
+        }
+
+        function startWave(now) {
+          waveLeft = 3 + Math.floor(Math.random() * 3)
+          nextWaveAt = now + 6000 + Math.random() * 7000
+        }
+
+        function spawnOne(now) {
+          const speed = 1.1 + Math.random() * 1.4
+          const angle = 0.22 + Math.random() * 0.12
+          meteors.push({
+            x: W + 70,
+            y: H * (0.08 + Math.random() * 0.62),
+            vx: -Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            len: 230 + Math.random() * 220,
+            w: 1.5 + Math.random() * 1.2,
+            color: PALETTE[Math.floor(Math.random() * PALETTE.length)],
+            phase: Math.random() * 6.283,
+            idea: nextIdea(),
+            life: 0,
+            max: 2600,
+            pause: false,
+            hist: [],
+            flash: 0,
+          })
+        }
+
+        function frame(now) {
+          try {
+            const t = now / 1000
+            gl.clearColor(0.01, 0.012, 0.03, 1)
+            gl.clear(gl.COLOR_BUFFER_BIT)
+
+            // 背景
+            gl.useProgram(progBg)
+            gl.activeTexture(gl.TEXTURE0)
+            gl.bindTexture(gl.TEXTURE_2D, tex)
+            gl.uniform1i(uResBg, 0)
+            gl.disable(gl.BLEND)
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+
+            // 以下全部画在叠加层：GL 只出银河底，其余用 2D —— 那套是验证过能动的
+          if (lctx) {
+            lctx.clearRect(0, 0, W, H)
+
+            // 星
+            lctx.globalCompositeOperation = 'lighter'
+            for (const st of starPts) {
+              const tw = 0.55 + 0.45 * Math.sin(t * 1.4 + st.p)
+              const glow = lctx.createRadialGradient(st.x, st.y, 0, st.x, st.y, 26)
+              glow.addColorStop(0, 'rgba(255,208,120,' + (0.35 * tw).toFixed(3) + ')')
+              glow.addColorStop(1, 'rgba(0,0,0,0)')
+              lctx.fillStyle = glow
+              lctx.beginPath()
+              lctx.arc(st.x, st.y, 26, 0, Math.PI * 2)
+              lctx.fill()
+              lctx.fillStyle = 'rgba(255,255,255,' + (0.75 + 0.25 * tw).toFixed(3) + ')'
+              lctx.beginPath()
+              lctx.arc(st.x, st.y, 1.3 + tw * 0.8, 0, Math.PI * 2)
+              lctx.fill()
+            }
+
+            // 球
+            const sphereR = Math.min(W, H) * 0.19
+            const sx0 = W * 0.5
+            const sy0 = H * 0.53
+            const spinS = t * 0.32
+            const halo = lctx.createRadialGradient(sx0, sy0, sphereR * 0.2, sx0, sy0, sphereR * 1.95)
+            halo.addColorStop(0, 'rgba(130,155,255,0.34)')
+            halo.addColorStop(0.45, 'rgba(110,90,230,0.12)')
+            halo.addColorStop(1, 'rgba(80,60,200,0)')
+            lctx.fillStyle = halo
+            lctx.beginPath()
+            lctx.arc(sx0, sy0, sphereR * 1.95, 0, Math.PI * 2)
+            lctx.fill()
+
+            for (let i = 0; i < 520; i += 1) {
+              const phi = Math.acos(1 - (2 * (i + 0.5)) / 520)
+              const theta = i * 2.399963
+              const bx = Math.sin(phi) * Math.cos(theta)
+              const by = Math.cos(phi)
+              const bz = Math.sin(phi) * Math.sin(theta)
+              const ca = Math.cos(spinS)
+              const sa = Math.sin(spinS)
+              const rx = bx * ca - bz * sa
+              const rz = bx * sa + bz * ca
+              const depth = (rz + 1) / 2
+              const px = sx0 + rx * sphereR
+              const py = sy0 + by * sphereR * 0.98
+              const lat = (by + 1) / 2
+              const kCyc = 0.5 + 0.5 * Math.sin(t * 0.45 + lat * 2.4)
+              let crr, cgg, cbb
+              if (kCyc < 0.5) {
+                const kk = kCyc * 2
+                crr = 90 + (80 - 90) * kk
+                cgg = 255 + (170 - 255) * kk
+                cbb = 190 + (255 - 190) * kk
+              } else {
+                const kk = (kCyc - 0.5) * 2
+                crr = 80 + (185 - 80) * kk
+                cgg = 170 + (120 - 170) * kk
+                cbb = 255
+              }
+              const alpha = (0.22 + depth * 0.78) * (0.8 + 0.2 * Math.sin(t * 2 + i))
+              lctx.fillStyle = 'rgba(' + Math.round(crr) + ',' + Math.round(cgg) + ',' + Math.round(cbb) + ',' + alpha.toFixed(3) + ')'
+              lctx.beginPath()
+              lctx.arc(px, py, 0.55 + depth * 1.5, 0, Math.PI * 2)
+              lctx.fill()
+              if (depth > 0.86) {
+                lctx.fillStyle = 'rgba(245,250,255,0.8)'
+                lctx.beginPath()
+                lctx.arc(px, py, 0.45 + depth * 0.7, 0, Math.PI * 2)
+                lctx.fill()
+              }
+            }
+
+            // 流星
+            if (now - lastSpawn > 700 + Math.random() * 900 && meteors.length < 16) {
+              lastSpawn = now
+              spawnOne(now)
+            }
+            for (let mi = meteors.length - 1; mi >= 0; mi -= 1) {
+              const m = meteors[mi]
+              const wantPause = m.pause ? 1 : 0
+              m.pauseAmt = (m.pauseAmt || 0) + (wantPause - (m.pauseAmt || 0)) * 0.12
+              const speedK = 1 - m.pauseAmt * 0.97
+              if (speedK > 0.02) {
+                m.x += m.vx * speedK
+                m.y += m.vy * speedK
+                m.life += 1
+                m.hist.push({ x: m.x, y: m.y })
+                if (m.hist.length > 260) m.hist.shift()
+              }
+
+              // 和中心球同一套色环：绿→蓝→紫，随时间流动，每颗相位不同
+              const kCycM = 0.5 + 0.5 * Math.sin(t * 0.45 + (m.phase || 0))
+              let mColorR
+              let mColorG
+              let mColorB
+              if (kCycM < 0.5) {
+                const kk = kCycM * 2
+                mColorR = (80 + (70 - 80) * kk) / 255
+                mColorG = (235 + (150 - 235) * kk) / 255
+                mColorB = (170 + (255 - 170) * kk) / 255
+              } else {
+                const kk = (kCycM - 0.5) * 2
+                mColorR = (70 + (185 - 70) * kk) / 255
+                mColorG = (150 + (120 - 150) * kk) / 255
+                mColorB = 1
+              }
+
+              const hx = m.x
+              const hy = m.y
+              const nH = m.hist.length
+
+              // 拖尾：本体色，从头部到尾部逐渐变淡（渐变光带而不是硬线）
+              if (nH > 1) {
+                const tx = m.hist[0].x
+                const ty = m.hist[0].y
+                const hx2 = m.hist[nH - 1].x
+                const hy2 = m.hist[nH - 1].y
+                const rr = Math.round(mColorR * 255)
+                const gg2 = Math.round(mColorG * 255)
+                const bb = Math.round(mColorB * 255)
+                const tg = lctx.createLinearGradient(tx, ty, hx2, hy2)
+                tg.addColorStop(0, 'rgba(' + rr + ',' + gg2 + ',' + bb + ',0)')
+                tg.addColorStop(0.55, 'rgba(' + rr + ',' + gg2 + ',' + bb + ',0.18)')
+                tg.addColorStop(1, 'rgba(' + rr + ',' + gg2 + ',' + bb + ',0.65)')
+                lctx.strokeStyle = tg
+                lctx.lineCap = 'round'
+                lctx.lineWidth = m.w * 1.6
+                lctx.beginPath()
+                lctx.moveTo(tx, ty)
+                lctx.lineTo(hx2, hy2)
+                lctx.stroke()
+
+                // 外面再罩一层更宽的淡光，边沿才不硬
+                const tg2 = lctx.createLinearGradient(tx, ty, hx2, hy2)
+                tg2.addColorStop(0, 'rgba(' + rr + ',' + gg2 + ',' + bb + ',0)')
+                tg2.addColorStop(1, 'rgba(' + rr + ',' + gg2 + ',' + bb + ',0.14)')
+                lctx.strokeStyle = tg2
+                lctx.lineWidth = m.w * 4.2
+                lctx.beginPath()
+                lctx.moveTo(tx, ty)
+                lctx.lineTo(hx2, hy2)
+                lctx.stroke()
+              }
+
+              // 本体的发光小球
+              // 被点到的那一下：闪一圈再散开，给个触感
+              if (m.flash > 0.02) {
+                const fa = m.flash
+                lctx.globalCompositeOperation = "lighter"
+                lctx.strokeStyle = "rgba(255,255,255," + (0.55 * fa).toFixed(3) + ")"
+                lctx.lineWidth = 1.4 + fa * 1.6
+                lctx.beginPath()
+                lctx.arc(hx, hy, m.w * (3 + (1 - fa) * 14), 0, Math.PI * 2)
+                lctx.stroke()
+                const fg = lctx.createRadialGradient(hx, hy, 0, hx, hy, m.w * 14 * fa)
+                fg.addColorStop(0, "rgba(255,255,255," + (0.5 * fa).toFixed(3) + ")")
+                fg.addColorStop(1, "rgba(255,255,255,0)")
+                lctx.fillStyle = fg
+                lctx.beginPath()
+                lctx.arc(hx, hy, m.w * 14 * fa, 0, Math.PI * 2)
+                lctx.fill()
+                lctx.globalCompositeOperation = "source-over"
+                m.flash *= 0.88
+              }
+
+              const hg = lctx.createRadialGradient(hx, hy, 0, hx, hy, m.w * 4.2)
+              hg.addColorStop(0, 'rgba(255,255,255,0.98)')
+              hg.addColorStop(0.2, 'rgba(' + Math.round(mColorR * 255) + ',' + Math.round(mColorG * 255) + ',' + Math.round(mColorB * 255) + ',0.8)')
+              hg.addColorStop(1, 'rgba(0,0,0,0)')
+              lctx.fillStyle = hg
+              lctx.beginPath()
+              lctx.arc(hx, hy, m.w * 4.2, 0, Math.PI * 2)
+              lctx.fill()
+
+              if (m.idea) {
+                lctx.globalCompositeOperation = 'source-over'
+                lctx.globalAlpha = 1
+                lctx.font = '11px ui-sans-serif, system-ui, "PingFang SC", sans-serif'
+                lctx.fillStyle = 'rgba(226,238,252,0.78)'
+                lctx.fillText(m.idea.length > 11 ? m.idea.slice(0, 11) + '…' : m.idea, hx + 14, hy - 10)
+              }
+
+              if (m.x < -500 || m.y > H + 260 || m.life > m.max) meteors.splice(mi, 1)
+            }
+
+            lctx.globalCompositeOperation = 'source-over'
+          }
+
+          raf = requestAnimationFrame(frame)
+          } catch (err) {
+            if (!frame._warned) {
+              frame._warned = true
+              console.log('[meteor-gl] 帧循环出错:', err && err.message)
+              setGlErr(String((err && err.message) || err))
+            }
+            raf = requestAnimationFrame(frame)
+          }
+
+        }
+
+        const onMove = (event) => {
+          const rect = canvas.getBoundingClientRect()
+          const mx = event.clientX - rect.left
+          const my = event.clientY - rect.top
+          let best = -1
+          let bestD = 34
+          for (let i = 0; i < meteors.length; i += 1) {
+            const d = Math.hypot(meteors[i].x - mx, meteors[i].y - my)
+            if (d < bestD) {
+              bestD = d
+              best = i
+            }
+          }
+          for (const m of meteors) m.pause = false
+          if (best >= 0) {
+            meteors[best].pause = true
+            canvas.style.cursor = 'pointer'
+            setTip({ x: mx, y: my, text: meteors[best].idea })
+          } else {
+            canvas.style.cursor = 'default'
+            setTip(null)
+          }
+        }
+        const onTap = (event) => {
+          const rect = canvas.getBoundingClientRect()
+          const mx = event.clientX - rect.left
+          const my = event.clientY - rect.top
+          let best = -1
+          let bestD = 40
+          for (let i = 0; i < meteors.length; i += 1) {
+            const d = Math.hypot(meteors[i].x - mx, meteors[i].y - my)
+            if (d < bestD) { bestD = d; best = i }
+          }
+          if (best < 0) return
+          const m = meteors[best]
+          m.flash = 1
+          m.pause = !m.pause
+          setTip({ x: mx, y: my, text: m.idea })
+        }
+        const onLeave = () => {
+          for (const m of meteors) m.pause = false
+          setTip(null)
+        }
+
+        resize()
+        raf = requestAnimationFrame(frame)
+        canvas.addEventListener('mousemove', onMove)
+        canvas.addEventListener('mouseleave', onLeave)
+        canvas.addEventListener('click', onTap)
+        const onResize = () => resize()
+        window.addEventListener('resize', onResize)
+        return () => {
+          cancelAnimationFrame(raf)
+          canvas.removeEventListener('mousemove', onMove)
+          canvas.removeEventListener('mouseleave', onLeave)
+          canvas.removeEventListener('click', onTap)
+          window.removeEventListener('resize', onResize)
+        }
+      }, [])
+
+      useEffect(() => {
+        let alive = true
+        const load = async () => {
+          try {
+            const res = await fetch('/meteors/state', { cache: 'no-store' })
+            const json = await res.json()
+            if (!alive || !json || !json.ok) return
+            setStars(json.promoted || [])
+          } catch {
+            /* 下一轮再试 */
+          }
+        }
+        load()
+        const timer = setInterval(load, 15000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [])
+
+      return h(
+        'div',
+        { className: 'wb-meteors' },
+        h('canvas', { ref: glRef, className: 'wb-meteor-canvas' }),
+        h('canvas', { ref: labelRef, className: 'wb-meteor-canvas', style: { pointerEvents: 'none' } }),
+        h(
+          'div',
+          { className: 'wb-meteor-hud' },
+          h('div', { className: 'wb-meteor-title' }, '灵感海'),
+          h('div', { className: 'wb-meteor-sub' }, '念头一阵一阵地划过；鼠标停住一颗，它会停下来'),
+          glErr ? h('div', { className: 'wb-meteor-err' }, 'GL 出错：' + glErr) : null,
+        ),
+        tip ? h('div', { className: 'wb-meteor-tip', style: { left: tip.x + 18, top: tip.y + 16 } }, tip.text || '') : null,
+        stars.length
+          ? h(
+              'div',
+              { className: 'wb-meteor-stars' },
+              stars
+                .slice(-4)
+                .reverse()
+                .map((s, i) => h('div', { key: i, className: 'wb-meteor-star' }, h('b', null, '★ '), s.t)),
+            )
+          : null,
+      )
+    }
+
+    // 能在 WebGL2 上跑就用 GL 版（真发光），跑不了自动退回 2D。
+    function MeteorView() {
+      const ref = useRef(null)
+      const [mode, setMode] = useState(null)
+      useEffect(() => {
+        try {
+          const c = document.createElement("canvas")
+          // 重新启用 GL（带护栏，出错会显示在界面上）
+          const ok = !!(c.getContext("webgl2"))
+          setMode(ok ? "gl" : "2d")
+        } catch { setMode("2d") }
+      }, [])
+      if (mode === null) return h("div", { className: "wb-meteors" })
+      return mode === "gl" ? h(MeteorViewGL) : h(MeteorView2D)
+    }
+    function MeteorView2D() {
+      const canvasRef = useRef(null)
+      const [tip, setTip] = useState(null)
+      const [stars, setStars] = useState([])
+      const [errMsg, setErrMsg] = useState("")
+
+      useEffect(() => {
+        const canvas = canvasRef.current
+        if (!canvas) return
+        const g = canvas.getContext('2d')
+
+        let W = 0
+        let H = 0
+        let DPR = 1
+        let raf = 0
+        let bg = null
+        let nextWaveAt = 0
+        let waveLeft = 0
+        let waveDir = 1
+        const meteors = []
+        const dust = []
+        let starPts = []
+        let pool = []
+        let poolAt = 0
+
+        const PALETTE = [
+          [190, 225, 255],
+          [200, 200, 255],
+          [255, 214, 190],
+          [190, 255, 240],
+          [235, 200, 255],
+        ]
+
+        /** 背景：一条有厚度、有暗尘带的银河。只画一次。 */
+        function buildBackground() {
+          const c = document.createElement('canvas')
+          c.width = Math.max(1, Math.round(W * DPR))
+          c.height = Math.max(1, Math.round(H * DPR))
+          const x = c.getContext('2d')
+          x.scale(DPR, DPR)
+
+          const base = x.createLinearGradient(0, 0, W * 0.35, H)
+          base.addColorStop(0, '#04050b')
+          base.addColorStop(0.45, '#060916')
+          base.addColorStop(1, '#03040a')
+          x.fillStyle = base
+          x.fillRect(0, 0, W, H)
+
+          const band = -0.42
+          const cx = W * 0.5
+          const cy = H * 0.52
+
+          // 远层：一大团极淡的紫蓝雾，给银河一个"底"
+          x.save()
+          x.translate(cx, cy)
+          x.rotate(band)
+          for (let i = 0; i < 16; i += 1) {
+            const t = i / 15
+            const px = (t - 0.5) * W * 1.9
+            const pr = Math.min(W, H) * (0.3 + Math.sin(t * Math.PI) * 0.34)
+            const rg = x.createRadialGradient(px, 0, 0, px, 0, pr)
+            rg.addColorStop(0, 'rgba(120,135,235,0.045)')
+            rg.addColorStop(0.5, 'rgba(90,100,200,0.02)')
+            rg.addColorStop(1, 'rgba(0,0,0,0)')
+            x.fillStyle = rg
+            x.fillRect(px - pr, -pr, pr * 2, pr * 2)
+          }
+          x.restore()
+
+          // 中层：无数细密星点堆出带子的形状（中心密、边缘疏）
+          for (let i = 0; i < 2600; i += 1) {
+            const t = Math.random()
+            const px = (t - 0.5) * W * 1.9
+            const spread = Math.min(W, H) * (0.06 + Math.sin(t * Math.PI) * 0.16)
+            const py = (Math.random() - 0.5) * spread * 2 * (0.4 + Math.random() * 0.6)
+            const cos = Math.cos(band)
+            const sin = Math.sin(band)
+            const wx = cx + px * cos - py * sin
+            const wy = cy + px * sin + py * cos
+            if (wx < -10 || wx > W + 10 || wy < -10 || wy > H + 10) continue
+            const r = Math.random() < 0.9 ? 0.5 + Math.random() * 0.5 : 0.9 + Math.random() * 0.8
+            const a = 0.08 + Math.random() * 0.5
+            const warm = Math.random() < 0.22
+            x.fillStyle = warm ? `rgba(255,232,200,${a.toFixed(3)})` : `rgba(208,222,255,${a.toFixed(3)})`
+            x.beginPath()
+            x.arc(wx, wy, r, 0, Math.PI * 2)
+            x.fill()
+          }
+
+          x.restore()
+
+          // 背景散星（不在带上）：稀疏、偏冷
+          for (let i = 0; i < 900; i += 1) {
+            const px = Math.random() * W
+            const py = Math.random() * H
+            const r = Math.random() < 0.9 ? 0.4 + Math.random() * 0.5 : 0.9 + Math.random() * 0.7
+            const a = 0.06 + Math.random() * 0.45
+            x.fillStyle = `rgba(200,215,255,${a.toFixed(3)})`
+            x.beginPath()
+            x.arc(px, py, r, 0, Math.PI * 2)
+            x.fill()
+          }
+
+          // 几颗亮的，带十字
+          for (let i = 0; i < 14; i += 1) {
+            const px = Math.random() * W
+            const py = Math.random() * H
+            const r = 1.1 + Math.random() * 0.9
+            const rg = x.createRadialGradient(px, py, 0, px, py, r * 9)
+            rg.addColorStop(0, 'rgba(255,255,255,0.85)')
+            rg.addColorStop(0.3, 'rgba(200,220,255,0.25)')
+            rg.addColorStop(1, 'rgba(0,0,0,0)')
+            x.fillStyle = rg
+            x.beginPath()
+            x.arc(px, py, r * 9, 0, Math.PI * 2)
+            x.fill()
+            x.strokeStyle = 'rgba(220,235,255,0.18)'
+            x.lineWidth = 1
+            x.beginPath()
+            x.moveTo(px - r * 7, py)
+            x.lineTo(px + r * 7, py)
+            x.moveTo(px, py - r * 7)
+            x.lineTo(px, py + r * 7)
+            x.stroke()
+          }
+
+          // 暗角，把注意力收到中间
+          const vig = x.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.25, W * 0.5, H * 0.5, Math.max(W, H) * 0.75)
+          vig.addColorStop(0, 'rgba(0,0,0,0)')
+          vig.addColorStop(1, 'rgba(0,0,0,0.55)')
+          x.fillStyle = vig
+          x.fillRect(0, 0, W, H)
+
+          return c
+        }
+
+        function resize() {
+          const rect = canvas.getBoundingClientRect()
+          W = Math.max(320, Math.round(rect.width) || 900)
+          H = Math.max(260, Math.round(rect.height) || 520)
+          DPR = Math.min(2, window.devicePixelRatio || 1)
+          canvas.width = Math.round(W * DPR)
+          canvas.height = Math.round(H * DPR)
+          g.setTransform(DPR, 0, 0, DPR, 0, 0)
+          bg = buildBackground()
+          if (!dust.length) {
+            for (let i = 0; i < 60; i += 1) {
+              dust.push({ x: Math.random() * W, y: Math.random() * H, r: Math.random() * 1.2 + 0.4, p: Math.random() * 6.28 })
+            }
+          }
+          placeStars(starPts.map((s) => s.raw))
+        }
+
+        function placeStars(list) {
+          const src = Array.isArray(list) ? list : []
+          starPts = src.slice(-12).map((item, i) => ({
+            raw: item,
+            x: (0.1 + ((i * 0.41) % 0.78)) * W,
+            y: (0.12 + ((i * 0.33) % 0.62)) * H,
+            p: i * 1.7,
+            r: 1.2 + (i % 3) * 0.3,
+          }))
+        }
+
+        function nextIdea() {
+          if (!pool.length || Date.now() - poolAt > 60000) {
+            poolAt = Date.now()
+            fetch('/meteors/pool?n=16', { cache: 'no-store' })
+              .then((r) => r.json())
+              .then((j) => {
+                if (j && j.ok && Array.isArray(j.ideas) && j.ideas.length) pool = j.ideas
+              })
+              .catch(() => {})
+          }
+          if (!pool.length) return '（还没想出什么）'
+          return pool.shift().text || ''
+        }
+
+        /** 一批流星：同一边、同方向、错开出场，像一阵雨而不是乱飞。 */
+        function startWave(now) {
+          waveDir = -1
+          waveLeft = 3 + Math.floor(Math.random() * 3)
+          nextWaveAt = now + 6000 + Math.random() * 7000
+        }
+
+        function spawnOne(now) {
+          const speed = 1.1 + Math.random() * 1.5
+          const angle = 0.22 + Math.random() * 0.12
+          meteors.push({
+            born: now,
+            x: W + 70,
+            y: H * (0.08 + Math.random() * 0.62),
+            vx: waveDir * Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            len: 210 + Math.random() * 240,
+            w: 1.6 + Math.random() * 1.4,
+            color: PALETTE[Math.floor(Math.random() * PALETTE.length)],
+            idea: nextIdea(),
+            life: 0,
+            max: 2400,
+            pause: false,
+            hist: [],
+            sparks: Array.from({ length: 7 }, () => ({
+              d: Math.random() * 40,
+              o: (Math.random() - 0.5) * 12,
+              s: 0.4 + Math.random() * 0.9,
+            })),
+          })
+        }
+
+        function drawMeteor(m, t) {
+          const [r, gg, b] = m.color
+          const hx = m.x
+          const hy = m.y
+          const tx = m.x - m.vx * (m.len / 2.6)
+          const ty = m.y - m.vy * (m.len / 2.6)
+
+          g.globalCompositeOperation = 'lighter'
+
+          // 拖尾：沿速度方向画一个锥形（头粗尾细），再叠一条亮芯
+          const nx = -m.vy
+          const ny = m.vx
+          const norm = Math.hypot(nx, ny) || 1
+          const ux = (nx / norm) * m.w * 1.5
+          const uy = (ny / norm) * m.w * 1.5
+          g.beginPath()
+          g.moveTo(hx + ux, hy + uy)
+          g.lineTo(hx - ux, hy - uy)
+          g.lineTo(tx, ty)
+          g.closePath()
+          const cone = g.createLinearGradient(tx, ty, hx, hy)
+          cone.addColorStop(0, 'rgba(' + r + ',' + gg + ',' + b + ',0)')
+          cone.addColorStop(0.55, 'rgba(' + r + ',' + gg + ',' + b + ',0.10)')
+          cone.addColorStop(1, 'rgba(' + r + ',' + gg + ',' + b + ',0.45)')
+          g.fillStyle = cone
+          g.fill()
+
+          const core2 = g.createLinearGradient(tx, ty, hx, hy)
+          core2.addColorStop(0, 'rgba(255,255,255,0)')
+          core2.addColorStop(0.7, 'rgba(255,255,255,0.10)')
+          core2.addColorStop(1, 'rgba(255,255,255,0.78)')
+          g.strokeStyle = core2
+          g.lineWidth = m.w * 1.1
+          g.lineCap = 'round'
+          g.beginPath()
+          g.moveTo(tx, ty)
+          g.lineTo(hx, hy)
+          g.stroke()
+
+          for (let si = 0; si < 5; si += 1) {
+            const k0 = si / 5
+            const px2 = hx + (tx - hx) * k0
+            const py2 = hy + (ty - hy) * k0
+            const jit = Math.sin(t * 6 + si * 2.2) * 4 * k0
+            g.fillStyle = 'rgba(110,170,255,' + (0.18 * (1 - k0)).toFixed(3) + ')'
+            g.beginPath()
+            g.arc(px2 + jit, py2 + jit * 0.6, m.w * (0.5 + k0), 0, Math.PI * 2)
+            g.fill()
+          }
+
+          const head2 = g.createRadialGradient(hx, hy, 0, hx, hy, m.w * 13)
+          head2.addColorStop(0, 'rgba(255,255,255,0.98)')
+          head2.addColorStop(0.2, 'rgba(' + r + ',' + gg + ',' + b + ',0.8)')
+          head2.addColorStop(0.6, 'rgba(' + r + ',' + gg + ',' + b + ',0.18)')
+          head2.addColorStop(1, 'rgba(0,0,0,0)')
+          g.fillStyle = head2
+          g.beginPath()
+          g.arc(hx, hy, m.w * 13, 0, Math.PI * 2)
+          g.fill()
+
+          g.globalCompositeOperation = 'source-over'
+
+          if (m.idea) {
+            const text = m.idea.length > 11 ? m.idea.slice(0, 11) + '…' : m.idea
+            g.font = '10px ui-sans-serif, system-ui, "PingFang SC", sans-serif'
+            g.fillStyle = 'rgba(215,232,250,0.42)'
+            g.fillText(text, hx + 14, hy - 10)
+          }
+        }
+
+        function frame(now) {
+          try {
+            const t = now / 1000
+            // 每帧复位：一旦某帧中途抛错，加色混合/透明度会留在画布上，
+            // 之后整屏都会被叠加成一团白光
+            g.globalCompositeOperation = 'source-over'
+            g.globalAlpha = 1
+            if (bg) g.drawImage(bg, 0, 0, W, H)
+            else {
+              g.fillStyle = '#04050b'
+              g.fillRect(0, 0, W, H)
+            }
+
+            // 浮尘
+            g.globalCompositeOperation = 'lighter'
+            for (const d of dust) {
+              g.fillStyle = `rgba(170,200,255,${(0.04 + 0.06 * Math.sin(t + d.p)).toFixed(3)})`
+              g.beginPath()
+              g.arc(d.x, d.y, d.r, 0, Math.PI * 2)
+              g.fill()
+            }
+            g.globalCompositeOperation = 'source-over'
+
+            // ── 中心：一团蓝紫色发光粒子组成的球 ──
+            // 用球面均匀分布的点，绕竖轴自转；靠深度决定大小和透明度，靠纬度决定颜色。
+            const sphereR = Math.min(W, H) * 0.19
+            const sx0 = W * 0.5
+            const sy0 = H * 0.53
+            const spin = t * 0.32
+
+            // 底光：球体外面的一层柔光，粒子才不会像浮在纸上
+            const halo = g.createRadialGradient(sx0, sy0, sphereR * 0.2, sx0, sy0, sphereR * 1.9)
+            halo.addColorStop(0, 'rgba(120,140,255,0.28)')
+            halo.addColorStop(0.45, 'rgba(110,90,230,0.10)')
+            halo.addColorStop(1, 'rgba(80,60,200,0)')
+            g.fillStyle = halo
+            g.beginPath()
+            g.arc(sx0, sy0, sphereR * 1.9, 0, Math.PI * 2)
+            g.fill()
+
+            g.globalCompositeOperation = 'lighter'
+            for (let i = 0; i < 320; i += 1) {
+              // 球面均匀分布（黄金角螺旋），每帧只算旋转
+              const phi = Math.acos(1 - (2 * (i + 0.5)) / 320)
+              const theta = i * 2.399963
+              const bx = Math.sin(phi) * Math.cos(theta)
+              const by = Math.cos(phi)
+              const bz = Math.sin(phi) * Math.sin(theta)
+
+              const ca = Math.cos(spin)
+              const sa = Math.sin(spin)
+              const rx = bx * ca - bz * sa
+              const rz = bx * sa + bz * ca
+
+              // 只有朝前的才画，背面淡一点当作透光
+              const depth = (rz + 1) / 2
+              const px = sx0 + rx * sphereR
+              const py = sy0 + by * sphereR * 0.98
+
+              const lat = (by + 1) / 2
+              // 绿(80,235,170) → 蓝(70,150,255) → 紫(175,105,255)
+              // k 让颜色沿色环往复，转动时整颗球会自己换色
+              const kCyc = 0.5 + 0.5 * Math.sin(t * 0.45 + lat * 2.4)
+              let crr
+              let cgg
+              let cbb
+              if (kCyc < 0.5) {
+                const kk = kCyc * 2
+                crr = 80 + (70 - 80) * kk
+                cgg = 235 + (150 - 235) * kk
+                cbb = 170 + (255 - 170) * kk
+              } else {
+                const kk = (kCyc - 0.5) * 2
+                crr = 70 + (175 - 70) * kk
+                cgg = 150 + (105 - 150) * kk
+                cbb = 255
+              }
+              const cr = Math.round(crr)
+              const cg = Math.round(cgg)
+              const cb = Math.round(cbb)
+              const size = 0.8 + depth * 1.9
+              const alpha = (0.10 + depth * 0.55) * (0.75 + 0.25 * Math.sin(t * 2 + i))
+
+              g.fillStyle = 'rgba(' + cr + ',' + cg + ',' + cb + ',' + alpha.toFixed(3) + ')'
+              g.beginPath()
+              g.arc(px, py, size, 0, Math.PI * 2)
+              g.fill()
+
+              // 朝前的一小部分给个高光核，球才有体积
+              if (depth > 0.82) {
+                g.fillStyle = 'rgba(235,240,255,0.55)'
+                g.beginPath()
+                g.arc(px, py, size * 0.5, 0, Math.PI * 2)
+                g.fill()
+              }
+            }
+            g.globalCompositeOperation = 'source-over'
+
+            // 常驻的星
+            for (const s of starPts) {
+              const tw = 0.55 + 0.45 * Math.sin(t * 1.4 + s.p)
+              g.globalCompositeOperation = 'lighter'
+              const glow = g.createRadialGradient(s.x, s.y, 0, s.x, s.y, 30)
+              glow.addColorStop(0, `rgba(255,208,120,${(0.32 * tw).toFixed(3)})`)
+              glow.addColorStop(1, 'rgba(0,0,0,0)')
+              g.fillStyle = glow
+              g.beginPath()
+              g.arc(s.x, s.y, 30, 0, Math.PI * 2)
+              g.fill()
+              g.globalCompositeOperation = 'source-over'
+              g.fillStyle = `rgba(255,255,255,${(0.72 + 0.28 * tw).toFixed(3)})`
+              g.beginPath()
+              g.arc(s.x, s.y, s.r * (0.9 + 0.3 * tw), 0, Math.PI * 2)
+              g.fill()
+              g.strokeStyle = `rgba(255,208,120,${(0.3 * tw).toFixed(3)})`
+              g.lineWidth = 1
+              g.beginPath()
+              g.moveTo(s.x - 12, s.y)
+              g.lineTo(s.x + 12, s.y)
+              g.moveTo(s.x, s.y - 12)
+              g.lineTo(s.x, s.y + 12)
+              g.stroke()
+            }
+
+            // 一阵一阵地来，不是随时乱冒
+            if (now > nextWaveAt) startWave(now)
+            if (waveLeft > 0 && now > nextWaveAt - 9000 + (3 - waveLeft) * 260 && meteors.length < 9) {
+              spawnOne(now)
+              waveLeft -= 1
+            }
+
+            for (let i = meteors.length - 1; i >= 0; i -= 1) {
+              const m = meteors[i]
+              if (!m.pause) {
+                m.x += m.vx
+                m.y += m.vy
+                m.life += 1
+                m.hist.push({ x: m.x, y: m.y })
+                if (m.hist.length > 9) m.hist.shift()
+              }
+              drawMeteor(m, t)
+              if (m.x < -700 || m.x > W + 700 || m.y > H + 300 || m.life > m.max) {
+                meteors.splice(i, 1)
+              }
+            }
+
+            raf = requestAnimationFrame(frame)
+          } catch (err) {
+            // 关键：出错也要继续排下一帧，否则动画就永远停在这里
+            if (!frame._warned) {
+              frame._warned = true
+              console.log('[meteor] 帧循环出错（只报一次）:', err && err.message)
+              setErrMsg(String((err && err.message) || err))
+            }
+            raf = requestAnimationFrame(frame)
+          }
+
+        }
+
+        const onMove = (event) => {
+          const rect = canvas.getBoundingClientRect()
+          const mx = event.clientX - rect.left
+          const my = event.clientY - rect.top
+          let best = -1
+          let bestD = 34
+          for (let i = 0; i < meteors.length; i += 1) {
+            const m = meteors[i]
+            const d = Math.hypot(m.x - mx, m.y - my)
+            if (d < bestD) {
+              bestD = d
+              best = i
+            }
+          }
+          for (const m of meteors) m.pause = false
+          if (best >= 0) {
+            meteors[best].pause = true
+            canvas.style.cursor = 'pointer'
+            setTip({ x: mx, y: my, text: meteors[best].idea })
+          } else {
+            canvas.style.cursor = 'default'
+            setTip(null)
+          }
+        }
+        const onLeave = () => {
+          for (const m of meteors) m.pause = false
+          setTip(null)
+        }
+
+        resize()
+        raf = requestAnimationFrame(frame)
+        canvas.addEventListener('mousemove', onMove)
+        canvas.addEventListener('mouseleave', onLeave)
+        const onResize = () => resize()
+        window.addEventListener('resize', onResize)
+        return () => {
+          cancelAnimationFrame(raf)
+          canvas.removeEventListener('mousemove', onMove)
+          canvas.removeEventListener('mouseleave', onLeave)
+          window.removeEventListener('resize', onResize)
+        }
+      }, [])
+
+      useEffect(() => {
+        let alive = true
+        const load = async () => {
+          try {
+            const res = await fetch('/meteors/state', { cache: 'no-store' })
+            const json = await res.json()
+            if (!alive || !json || !json.ok) return
+            setStars(json.promoted || [])
+          } catch {
+            /* 下一轮再试 */
+          }
+        }
+        load()
+        const timer = setInterval(load, 15000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [])
+
+      return h(
+        'div',
+        { className: 'wb-meteors' },
+        h('canvas', { ref: canvasRef, className: 'wb-meteor-canvas' }),
+        h(
+          'div',
+          { className: 'wb-meteor-hud' },
+          h('div', { className: 'wb-meteor-title' }, '灵感海'),
+          h('div', { className: 'wb-meteor-sub' }, '念头一阵一阵地划过；鼠标停住一颗，它会停下来'),
+          errMsg ? h('div', { className: 'wb-meteor-err' }, '渲染出错：' + errMsg) : null,
+        ),
+        tip
+          ? h(
+              'div',
+              { className: 'wb-meteor-tip', style: { left: tip.x + 18, top: tip.y + 16 } },
+              tip.text || '',
+            )
+          : null,
+        stars.length
+          ? h(
+              'div',
+              { className: 'wb-meteor-stars' },
+              stars
+                .slice(-4)
+                .reverse()
+                .map((s, i) => h('div', { key: i, className: 'wb-meteor-star' }, h('b', null, '★ '), s.t)),
+            )
+          : null,
+      )
+    }
+
     function BrainPanel({ t, onMount }) {
       const { snap, error, reload } = useSnapshot()
       useEffect(() => {
@@ -879,6 +2110,8 @@ window.__ModuleLoader__.load({
       }, [onMount])
       const [active, setActive] = useState('private')
       const [picked, setPicked] = useState(null)
+      // 两个视角：粒子大脑 / 生命体征（嵌数字生命的观测台，不另开窗口）
+      const [view, setView] = useState('brain')
       const [busy, setBusy] = useState(false)
       const [learnMsg, setLearnMsg] = useState('')
 
@@ -955,6 +2188,16 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'wb-top-actions' },
+            // 三个视角：永远显示「另外两个」，点哪个去哪个。
+            ...[['brain', '大脑'], ['life', '数字生命'], ['meteors', '灵感海']]
+              .filter(([id]) => id !== view)
+              .map(([id, label]) =>
+                h(
+                  'button',
+                  { key: id, className: 'wb-toggle', onClick: () => setView(id), type: 'button' },
+                  label,
+                ),
+              ),
             h(
               'button',
               {
@@ -967,6 +2210,19 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+        view === 'meteors' ? h(MeteorView) : null,
+        // 生命体征：嵌数字生命自己的观测台（8790）。顶栏压在它上面，切得回来。
+        view === 'life'
+          ? h(
+              'div',
+              { className: 'wb-life' },
+              h('iframe', {
+                src: 'http://127.0.0.1:8790/',
+                title: 'Life-OS',
+                style: { border: 'none', width: '100%', height: '100%', background: '#0b0f16', display: 'block' },
+              }),
+            )
+          : null,
         h(
           'div',
           { className: 'wb-main' },
@@ -1194,6 +2450,23 @@ window.__ModuleLoader__.load({
     // ---------- 样式 ----------
     const CSS = `
 .wb{display:flex;flex-direction:column;height:100%;min-height:520px;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-family:ui-sans-serif,system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+.wb{position:relative}
+.wb-top{position:relative;z-index:10;background:var(--dsw-alias-bg-base)}
+.wb-meteors{position:absolute;left:0;right:0;top:0;bottom:0;z-index:9;background:#05060c}
+.wb-meteor-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.wb-meteor-hud{position:absolute;left:22px;top:20px;pointer-events:none;color:#cfe3ff}
+.wb-meteor-tip{position:absolute;transition:opacity .18s ease,transform .18s ease;animation:wbTipIn .18s ease;z-index:12;max-width:320px;padding:9px 12px;border-radius:9px;
+  background:rgba(8,12,22,.94);border:1px solid rgba(120,160,220,.35);color:#dbe8fb;
+  font-size:12.5px;line-height:1.6;pointer-events:none;box-shadow:0 8px 28px rgba(0,0,0,.55)}
+.wb-meteor-stars{position:absolute;right:18px;top:16px;width:230px;pointer-events:none}
+.wb-meteor-star{font-size:11.5px;line-height:1.55;color:#9fc0e0;opacity:.6;margin-bottom:8px;
+  border-left:2px solid rgba(255,210,130,.3);padding-left:8px}
+.wb-meteor-star b{color:#ffd479;font-weight:500}
+@keyframes wbTipIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.wb-meteor-title{font-size:15px;font-weight:600;letter-spacing:.4px;opacity:.92}
+.wb-meteor-err{margin-top:6px;font-size:10.5px;color:#ff9aa4;max-width:420px;line-height:1.5}
+.wb-meteor-sub{margin-top:5px;font-size:11px;opacity:.45}
+.wb-life{position:absolute;left:0;right:0;top:0;bottom:0;z-index:9;background:#0b0f16}
 .wb-center{align-items:center;justify-content:center;gap:8px;text-align:center;padding:40px}
 .wb-offline{font-size:15px;font-weight:600}
 .wb-offline-hint{font-size:12px;color:var(--dsw-alias-label-secondary);max-width:420px}
