@@ -19,6 +19,25 @@ Above the brain there is a second view: a night sky where **thoughts cross as sh
  `mobile.html` is a self-contained page served by the plugin over LAN/ngrok: **brain / meteor sea / vitals**.
 The vitals view proxies the Life-OS snapshot and renders everything the desktop panel shows — energy, the full chemical list, neural pulse history, open loops, organs, last dream, temperament — and scrolls.
 
+
+## Compatibility, permissions and boundaries
+
+| | |
+|---|---|
+| Node | `^22.19.0 || >=24.0.0` |
+| DSH | `>=0.2.0-rc.2` |
+| Runtime deps | none beyond the Node standard library; optional bridge modules are imported lazily and skipped when absent |
+
+**What it touches**
+
+- **Files** — reads the QQ bridge state directory (chat logs, shared memory, slang, cold knowledge) and writes its own caches there; never writes outside `~/.dsh` and that bridge directory.
+- **Network** — outbound requests to public feeds (Bilibili, Tieba, Hitokoto) and to a search backend when the model asks itself about a word. All calls are best-effort: on failure the plugin logs and continues, nothing blocks the brain.
+- **Local processes** — may start the two local Life-OS helpers (data bridge on 8787, page on 8790) and restart them if they die. It does not spawn user-provided commands.
+- **Credentials** — reads the local bridge console token from the bridge state directory at runtime so a promoted thought can be delivered as a QQ message. The token is never copied into this package or written into logs.
+- **Dynamic loading** — the browser half is loaded through the DSH client module loader (`window.__ModuleLoader__`); the host half imports optional bridge modules with dynamic `import()` and degrades if they are missing.
+
+**Failure bounds** — every subsystem (feeds, learning, meteor promotion, mobile server, Life-OS supervision) is wrapped so a failure logs and returns; no code path throws into the session. The brain keeps rendering from its last good snapshot.
+
 ---
 
 ## What it actually does

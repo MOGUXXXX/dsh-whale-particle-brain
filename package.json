@@ -43,6 +43,16 @@
       "platform": "web",
       "immediately": true,
       "inject": []
+    },
+    "permissions": {
+      "files": "read-write within ~/.dsh and the bridge state dir",
+      "network": "outbound to public feed/search endpoints and 127.0.0.1 bridge ports",
+      "commands": "spawns the local Life-OS helper processes (8787/8790) and restarts them when they die",
+      "credentials": "reads the local QQ bridge console token at runtime to send proactive messages; never stored in the package"
     }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.0-rc.2"
   }
 }
